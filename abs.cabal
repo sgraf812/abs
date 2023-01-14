@@ -32,6 +32,6 @@ executable abs
     build-depends:    base
                     , containers
                     , transformers
-                    , monadic-bang
+--                    , monadic-bang
     hs-source-dirs:   app
     default-language: Haskell2010

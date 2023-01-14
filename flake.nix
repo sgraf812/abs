@@ -17,7 +17,8 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
 
-        haskellPackages = pkgs.haskell.packages.ghc944;
+        #haskellPackages = pkgs.haskell.packages.ghc944;
+        haskellPackages = pkgs.haskellPackages;
 
         jailbreakUnbreak = pkg:
           pkgs.haskell.lib.doJailbreak (pkg.overrideAttrs (_: { meta = { }; }));
@@ -28,7 +29,7 @@
         packages.${packageName} =
           haskellPackages.callCabal2nix packageName self {
             # Dependency overrides go here
-            monadic-bang = pkgs.haskell.lib.dontCheck (haskellPackages.callCabal2nix "monadic-bang" monadic-bang {fused-effects = pkgs.haskell.lib.dontCheck haskellPackages.fused-effects;});
+#            monadic-bang = pkgs.haskell.lib.dontCheck (haskellPackages.callCabal2nix "monadic-bang" monadic-bang {fused-effects = pkgs.haskell.lib.dontCheck haskellPackages.fused-effects;});
           };
 
         packages.default = self.packages.${system}.${packageName};
