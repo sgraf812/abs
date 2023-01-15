@@ -71,10 +71,13 @@ data Trace
   | SnocT Trace !Action Label
   deriving (Eq,Ord)
 
+-- think of type Trace = Nu TraceF; e.g., greatest fixed-point, to allow
+-- infinite traces Haskell data types are greatest fixed-points
+
 instance Show Trace where
-  show (End l) = show l
-  show (ConsT l a t) = show l ++ "-" ++ show a ++ "->" ++ show t
-  show (SnocT t a l) = show t ++ "-" ++ show a ++ "->" ++ show l
+  show (End l) = "[" ++ show l ++ "]"
+  show (ConsT l a t) = "[" ++ show l ++ "]-" ++ show a ++ "->" ++ show t ++ ""
+  show (SnocT t a l) = show t ++ "-" ++ show a ++ "->[" ++ show l ++ "]"
 
 instance Show LExpr where
   show le = case le.thing of
@@ -120,7 +123,7 @@ lenT (End _) = 0
 lenT (ConsT _ _ t) = 1 + lenT t
 lenT (SnocT t _ _) = 1 + lenT t
 
-type D = Trace -> Set Trace
+type D = Trace -> Trace
 type (:->) = Map
 
 data Value = Fun (D -> D)
@@ -143,36 +146,39 @@ val t = go (snocifyT t)
     go ConsT{} = error "invalid"
 
 enter :: Action -> Label -> D -> D
-enter a l sem p = Set.map (ConsT (dst p) a) $ sem $ SnocT p a l
+enter a l sem p = ConsT (dst p) a $ sem $ SnocT p a l
 
-pref, pref' :: LExpr -> (Name :-> D) -> D
+maxinf, maxinf' :: LExpr -> (Name :-> D) -> D
 
-pref le env p =
-  let res = pref' le env p in
-  if any (\p' -> dst p /= src p') res then error (show le ++ " " ++ show p ++ " " ++ show res) else
+maxinf le env p =
+  let res = maxinf' le env p in
+  if dst p /= src res then error (show le ++ " " ++ show p ++ " " ++ show res) else
   res
 
-pref' (Lab{ at=at, thing=e, after=after }) !env !p
-  | dst p /= at = Set.empty
-  | otherwise   = Set.insert (End at) $ case e of
+maxinf' (Lab{ at=at, thing=e, after=after }) !env !p
+  | dst p /= at = End at -- stuck
+  | otherwise   = case e of
       Var n    -> (env Map.! n) p
       App le n ->
-        enter AppA le.at (pref le env) p
-        `bindS` \p2 -> case concatT p p2 of
-          Just p3 -> Set.insert p2 $ case val p2 of
-            Just (Fun f) -> Set.map (fromJust . concatT p2) $ f (env Map.! n) p3
-            _            -> Set.empty
+        let p2 = enter AppA le.at (maxinf le env) p in
+        case concatT p p2 of
+          Just p3 -> case val p2 of
+            Just (Fun f) -> fromJust . concatT p2 $ f (env Map.! n) p3
+            _            -> p2
+          Nothing -> p2
       Lam n le ->
-        let val = Fun (\d -> enter BetaA (le.at) (pref le (Map.insert n d env)) . traceShowId) in
+        let val = Fun (\d -> enter BetaA (le.at) (maxinf le (Map.insert n d env))) in
         --traceShow p $
         --traceShow at $
         --traceShow after $
         --traceShowId $
-        Set.singleton (ConsT at (ValA val) (End after))
+        ConsT at (ValA val) (End after)
       Let n le1 le2 ->
-        let env' = Map.insert n (enter LookupA le1.at (pref le1 env')) env in
-        enter LetA le2.at (pref le2 env') p
-        `bindS` \p -> Set.insert p $ if dst p /= le2.after then Set.empty else Set.singleton (SnocT p LetA after)
+        let env' = Map.insert n (enter LookupA le1.at (maxinf le1 env')) env in
+        let p2 = enter LetA le2.at (maxinf le2 env') p in
+        if dst p2 == le2.after
+          then SnocT p2 LetA after
+          else p2
 
 bindS :: Ord b => Set a -> (a -> Set b) -> Set b
 bindS s f = Set.unions [ f a | a <- Set.elems s ]
@@ -202,5 +208,5 @@ pickMax s | null s    = Nothing
 main :: IO ()
 main = do
   print e2
-  print (pref e1 Map.empty (End (at e1)))
-  print (pickMax $ pref e2 Map.empty (End (at e2)))
+  print (maxinf e1 Map.empty (End (at e1)))
+  print (maxinf e2 Map.empty (End (at e2)))
