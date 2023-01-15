@@ -57,17 +57,16 @@ label (Fix e) = evalState (lab e) 1
           pure (App le n, after le)
         Lam n (Fix e) -> (,) <$> (Lam n <$> lab e) <*> next
         Let n (Fix e1) (Fix e2) -> do
-          le <- Let n <$> lab e1 <*> lab e2
-          after <- next
-          pure (le, after)
+          le2 <- lab e2
+          le <- Let n <$> lab e1 <*> pure le2
+          pure (le, le2.after)
       pure Lab {at = at, thing = le, after = after}
 
 data Action
-  = AppA
+  = AppA !Name
   | ValA !Value
-  | BetaA
-  | BindA !Name !D
-  | LeaveLetA
+  | BetaA !Name
+  | BindA !Name !Label !D
   | LookupA
   deriving (Eq, Ord, Show)
 
@@ -169,8 +168,8 @@ val t = go (snocifyT t)
       | otherwise = go t
     go ConsT {} = error "invalid"
 
-enter :: Action -> Label -> D -> D
-enter a l sem p = ConsT (dst p) a $ sem $ SnocT p a l
+step :: Action -> Label -> D -> D
+step a l sem p = ConsT (dst p) a $ sem $ SnocT p a l
 
 maxinf, maxinf' :: LExpr -> (Name :-> D) -> D
 maxinf le env p =
@@ -178,26 +177,25 @@ maxinf le env p =
    in -- if dst p /= src res then error (show le ++ " " ++ show p ++ " " ++ show res) else
       res
 maxinf' (Lab {at = at, thing = e, after = after}) !env !p
-  | dst p /= at = End at -- stuck
+  | dst p /= at = End at -- stuck. only happens on the initial call, I guess??? In all other cases we go through the step function
   | otherwise = case e of
       Var n -> (env Map.! n) p
       App le n ->
-        let p2 = enter AppA le.at (maxinf le env) p
+        let p2 = step (AppA n) le.at (maxinf le env) p
          in concatT p2 $ case val p2 of
               Just (Fun f) -> f (env Map.! n) (concatT p p2)
               Nothing -> End (dst p2)
       Lam n le ->
-        let val = Fun (\d -> enter BetaA (le.at) (maxinf le (Map.insert n d env)))
+        let val = Fun (\d -> step (BetaA n) (le.at) (maxinf le (Map.insert n d env)))
          in -- traceShow p $
             -- traceShow at $
             -- traceShow after $
             -- traceShowId $
             ConsT at (ValA val) (End after)
       Let n le1 le2 ->
-        let d = enter LookupA le1.at (maxinf le1 env')
+        let d = step LookupA le1.at (maxinf le1 env')
             env' = Map.insert n d env
-         in let p2 = enter LeaveLetA le2.at (maxinf le2 env') p
-             in SnocT p2 (BindA n d) after
+         in step (BindA n le1.at d) le2.at (maxinf le2 env') p
 
 bindS :: Ord b => Set a -> (a -> Set b) -> Set b
 bindS s f = Set.unions [f a | a <- Set.elems s]
@@ -273,7 +271,7 @@ subst x y (Fix e) = Fix $ case e of
       | x == z = y
       | otherwise = z
 
-freshName :: Name -> Heap -> Name
+freshName :: Name -> Map Name a -> Name
 freshName n h = go n
   where
     go n
@@ -320,17 +318,33 @@ tracesAt l t = case t of
 -- enumerate.
 --
 -- Note that we never look at the `Expr` returned by the indexing function.
-post :: (Label -> Expr) -> D -> Trace -> Label -> [Configuration]
-post le d p l = map (config le . concatT p) (tracesAt l (d p))
+post :: LExpr -> D -> Trace -> Label -> [Configuration]
+post le d p l = map (config (unlabel le) . concatT p) (tracesAt l (d p))
 
-config :: (Label -> Expr) -> Trace -> Configuration
-config le p = go (Map.empty, le (src p), []) (consifyT p)
+config :: Expr -> Trace -> Configuration
+config e p = go (snocifyT p)
   where
-    go :: Configuration -> Trace -> Configuration
-    go _ SnocT {} = undefined
-    go c@(h, e, s) (End l) = c
-    go c@(h, e, s) (ConsT l a t) = case a of
-      _ -> undefined
+    go :: Trace -> Configuration
+    go ConsT {} = undefined
+    go (End l) = (Map.empty, e, [])
+    go (SnocT t a l) =
+      let c@(h,Fix e,s) = go t in
+      case a of
+        BindA _ _ _  | Let n e1 e2 <- e ->
+          let n' = freshName n h
+              e1' = subst n n' e1
+              e2' = subst n n' e2
+           in (Map.insert n' e1' h, e2', s)
+        AppA _       | App e n <- e -> (h, e, Apply n:s)
+        ValA (Fun _) | Lam _ _ <- e -> c
+        BetaA _      | (Apply n':s') <- s, Lam n eb <- e -> (h, subst n n' eb, s')
+        LookupA      | Var n <- e -> (h, h Map.! n, s)
+
+defnSmallStep :: Expr -> [Configuration]
+defnSmallStep e = map (config e) prefs
+  where
+    prefs = [ takeT k (maxinf le Map.empty (End (le.at))) | k <- [0..] ]
+    le = label e
 
 -- |
 -- >>> e2
@@ -345,3 +359,5 @@ main = forM_ [e1, e2, ew] $ \e -> do
   print $ takeT 20 $ maxinf e Map.empty (End (at e))
   mapM_ print $ tracesAt 2 $ takeT 20 $ maxinf e Map.empty (End (at e))
   mapM_ print $ take 20 $ smallStep (unlabel e)
+  putStrLn "here"
+  mapM_ print $ take 20 $ defnSmallStep (unlabel e)
