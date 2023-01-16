@@ -27,83 +27,58 @@ import Text.Show (showListWith)
 import Expr
 import ByName
 
--- | Finite intialisation trace to infinite or maximal finite trace.
---
--- This type is actually the subtype of `Trace -> Trace` for which every
--- inhabitant `d` satisfies `src(d(p)) = dst(p)`.
---
--- We can give a partial pointwise prefix order ⊑:
---
--- d1(p) ⊑ d2(p)  <=>  ∃p'. d1(p) `concatT` p' = d2(p)
---
--- Note that a `D` is *not* a monotone map; indeed our semantics isn't.
--- The ordering is to be understood pointwise, ⊑^. .
---
--- There exists a bottom element `⊥(p) = End (dst p)` and directed sets have a
--- the pointwise supremum ⊔^.
--- (Finite case is simply the max element; infinite case is the limit of the
--- prefix traces).
--- Thus, (D,⊑^.,⊥,⊔^.) forms a CPO with bottom element ⊥.
--- Note that ⊥ represents an expression that is stuck in every context;
--- values do at least another step in our semantics.
---
-newtype D = D { unD :: Trace D -> Trace D }
+newtype C = C { unC :: forall r. Trace C -> (Trace C -> r) -> r }
+type E = Trace C -> Trace C
 
--- | The bottom element of the partial pointwise prefix ordering on `D`.
-botD :: D
-botD = D (\p -> End (dst p))
+botE :: E
+botE p = End (dst p)
 
--- | The partial pointwise prefix order. Can't compute :(
-leqD :: D -> D -> Bool
-leqD d1 d2 = forall (\p -> unD d1 p `isPrefixOf` unD d2 p)
-  where
-    forall f = undefined -- would need to iterate over all Traces
-    t1 `isPrefixOf` t2 = case (consifyT t1, consifyT t2) of
-      (End l, ConsT l' _ _) -> l == l'
-      (ConsT l _ t, ConsT l' _ t') -> l == l' && t1 `isPrefixOf` t2
-      (_,_) -> False
-
--- | The pairwise lub on ordered `D`s. Undefined everywhere else
-lubD :: D -> D -> D
-lubD d1 d2 = if d1 `leqD` d2 then d2 else d1
-
-instance Eq D where
+instance Eq E where
   _ == _ = True
 
-instance Ord D where
+instance Ord E where
   compare _ _ = EQ
 
-instance Show D where
-  show _ = "D"
+instance Show E where
+  show _ = "E"
 
-step :: Action D -> Label -> D -> D
-step a l sem = D $ \p -> ConsT (dst p) a $ unD sem $ SnocT p a l
+instance Show C where
+  show _ = "C"
 
-(!⊥) :: Ord a => (a :-> D) -> a -> D
-env !⊥ x = Map.findWithDefault botD x env
+--step :: Action C -> Label -> C -> C
+--step a l sem = C $ \k -> unC sem (k . (\e p -> ConsT (dst p) a (e (SnocT p a l))))
 
-maxinf :: LExpr -> (Name :-> D) -> Trace D -> Trace D
+step :: Action C -> Label -> C -> C
+step a l sem = C $ \p k -> unC sem (SnocT p a l) (k . ConsT (dst p) a)
+
+(!⊥) :: Ord a => (a :-> C) -> a -> C
+env !⊥ x = Map.findWithDefault (C $ \p k -> k (botE p)) x env
+
+maxinf :: LExpr -> (Name :-> C) -> Trace C -> Trace C
 maxinf le env p
-  | dst p /= le.at = unD botD p -- stuck. act as bottom! Only happens on the initial call, I guess???
+  | dst p /= le.at = botE p -- stuck. act as bottom! Only happens on the initial call, I guess???
                                 -- In all other cases we go through the step function.
-  | otherwise      = unD (go le env) p
+  | otherwise      = unC (go le env) p id
   where
-    go :: LExpr -> (Name :-> D) -> D
+    traceP :: C -> C
+    traceP c = C $ \p k -> traceShow p $ unC c p k
+    go :: LExpr -> (Name :-> C) -> C
     go le !env = case le.thing of
       Var n -> env !⊥ n
-      App le n -> D $ \p ->
-        let p2 = unD (step (AppA n) le.at (go le env)) p
-         in concatT p2 $ case val p2 of
-              Just (Fun f) -> unD (f (env !⊥ n)) (concatT p p2)
-              Nothing      -> undefined -- actually Bottom! Can't happen in a closed
-                                        -- program without Data types, though
+      App le n -> C $ \p k ->
+        let apply p2 =
+              case val p2 of
+                    Just (Fun f) -> unC (f (env !⊥ n)) (concatT p p2) (concatT p2)
+                    Nothing      -> undefined -- actually Bottom! Can't happen in a closed
+                                              -- program without Data types, though
+         in unC (step (AppA n) le.at (go le env)) p (k . apply)
       Lam n le ->
-        let val = Fun (\d -> step (BetaA n) (le.at) (go le (Map.insert n d env)))
-         in D $ \_ -> ConsT le.at (ValA val) (End le.after)
+        let val = Fun (\c -> step (BetaA n) (le.at) (go le (Map.insert n c env)))
+         in C $ \_p k -> k (ConsT le.at (ValA val) (End le.after))
       Let n le1 le2 ->
-        let d = step LookupA le1.at (go le1 env')
-            env' = Map.insert n d env
-         in step (BindA n le1.at d) le2.at (go le2 env')
+        let c = step LookupA le1.at (go le1 env')
+            env' = Map.insert n c env
+         in step (BindA n le1.at c) le2.at (go le2 env')
 
 -- post(go le []) will be the reachability semantics, e.g., small-step!
 -- Wart: Instead of a (set of) Trace `t`, it should take a (set of) Configuration `c`
@@ -115,5 +90,5 @@ maxinf le env p
 -- enumerate.
 --
 -- Note that we never look at the `Expr` returned by the indexing function.
-post :: LExpr -> D -> Trace D -> Label -> [Configuration]
-post le d p l = map (config (unlabel le) . concatT p) (tracesAt l (unD d p))
+--post :: LExpr -> E -> Trace E -> Label -> [Configuration]
+--post le d p l = map (config (unlabel le) . concatT p) (tracesAt l (unE d p))
