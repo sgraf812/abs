@@ -5,7 +5,7 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE TypeSynonymInstances #-}
 
-module Main where
+module Main (main) where
 
 import Control.Applicative
 import Control.Monad
@@ -339,12 +339,23 @@ config e p = go (snocifyT p)
         ValA (Fun _) | Lam _ _ <- e -> c
         BetaA _      | (Apply n':s') <- s, Lam n eb <- e -> (h, subst n n' eb, s')
         LookupA      | Var n <- e -> (h, h Map.! n, s)
+        _ -> error (show a)
 
 defnSmallStep :: Expr -> [Configuration]
-defnSmallStep e = map (config e) prefs
+defnSmallStep e = map (config e) (prefs sem)
   where
-    prefs = [ takeT k (maxinf le Map.empty (End (le.at))) | k <- [0..] ]
     le = label e
+    sem = maxinf le Map.empty (End (le.at))
+
+-- | Turns a maximal finite or infinite trace into the list of its prefix
+-- traces. The list is finite iff the incoming trace is.
+prefs :: Trace -> [Trace]
+prefs t = go (consifyT t)
+  where
+    go t = case t of
+      End l -> [t]
+      ConsT l a t' -> End l : map (ConsT l a) (prefs t')
+      SnocT{} -> undefined
 
 -- |
 -- >>> e2
@@ -356,8 +367,11 @@ main :: IO ()
 main = forM_ [e1, e2, ew] $ \e -> do
   putStrLn "----------------"
   print e
+  putStrLn "maximal and infinite trace"
   print $ takeT 20 $ maxinf e Map.empty (End (at e))
-  mapM_ print $ tracesAt 2 $ takeT 20 $ maxinf e Map.empty (End (at e))
+  putStrLn "smallStep"
   mapM_ print $ take 20 $ smallStep (unlabel e)
-  putStrLn "here"
+  putStrLn "tracesAt 2"
+  mapM_ print $ tracesAt 2 $ takeT 20 $ maxinf e Map.empty (End (at e))
+  putStrLn "defnSmallStep"
   mapM_ print $ take 20 $ defnSmallStep (unlabel e)
