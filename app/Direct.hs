@@ -101,7 +101,7 @@ maxinf le env p
         let val = Fun (\d -> step (BetaA n) (le'.at) (go le' (Map.insert n d env)))
          in D $ \_ -> ConsT le.at (ValA val) (End le.after)
       Let n le1 le2 ->
-        let d = step LookupA le1.at (go le1 env')
+        let d = step EnterA le1.at (go le1 env')
             env' = Map.insert n d env
          in step (BindA n le1.at d) le2.at (go le2 env')
 

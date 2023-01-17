@@ -90,7 +90,8 @@ data Action d
   | ValA !(Value d)
   | BetaA !Name
   | BindA !Name !Label !d
-  | LookupA
+  | EnterA
+  | LeaveA
   deriving (Eq, Ord, Show)
 
 data Value d = Fun (d -> d)

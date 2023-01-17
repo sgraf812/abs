@@ -68,12 +68,16 @@ config e p = go (snocifyT p)
               e2' = subst n n' e2
            in (Map.insert n' e1' h, e2', s)
         AppA _       | App e n <- e -> (h, e, Apply n:s)
-        ValA (Fun _) | Lam _ _ <- e -> c
+        ValA (Fun _) | Lam _ _ <- e -> c -- No corresponding small-step transition
         BetaA _      | (Apply n':s') <- s, Lam n eb <- e -> (h, subst n n' eb, s')
-        LookupA      | Var n <- e -> (h, h Map.! n, s)
+        EnterA      | Var n <- e -> (h, h Map.! n, s)
         _ -> undefined
 
-defnSmallStep :: Expr -> (Trace d -> Trace d) -> [Configuration]
-defnSmallStep e sem = map (config e) (prefs (sem (End (le.at))))
+defnSmallStep :: Show d => Expr -> (Trace d -> Trace d) -> [Configuration]
+defnSmallStep e sem = map (config e) $ filter (not . lastIsVal) $ (prefs (sem (End (le.at))))
   where
     le = label e
+    -- Value transitions have no corresponding small-step transition, hence we exclude them
+    lastIsVal t = case snocifyT t of
+      SnocT _ ValA{} _ -> True
+      _                -> False

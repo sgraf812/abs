@@ -58,10 +58,10 @@ ew2 = label $ let_ "x" (app x "x") x
 
 -- |
 -- >>> e2
--- 1(let x = 2(λy. 3(y)4)5 in 6(7(8(x)9@x)@x))10
+-- 1(let x = 6(λy. 7(y)8)9 in 2(3(4(x)5@x)@x))5
 --
--- >>> takeT 20 $ maxinf e2 Map.empty (End (at e2))
--- [1]-LeaveLetA->[6]-AppA->[7]-AppA->[8]-LookupA->[2]-ValA Fun->[5]-BetaA->[3]-LookupA->[2]-ValA Fun->[5]-BetaA->[3]-LookupA->[2]-ValA Fun->[5]-BindA "x" D->[10]
+-- >>> takeT 20 $ Direct.maxinf e2 Map.empty (End (at e2))
+-- [1]-BindA "x" 6 D->[2]-AppA "x"->[3]-AppA "x"->[4]-EnterA->[6]-ValA Fun->[9]-BetaA "y"->[7]-EnterA->[6]-ValA Fun->[9]-BetaA "y"->[7]-EnterA->[6]-ValA Fun->[9]
 main :: IO ()
 -- main = forM_ [e1, e2, estuck, ew, ew2] $ \e -> do
 main = forM_ [e1, e2] $ \e -> do
