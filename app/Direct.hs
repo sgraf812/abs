@@ -9,7 +9,7 @@
 {-# LANGUAGE ImpredicativeTypes #-}
 {-# LANGUAGE MultiWayIf #-}
 
-module Direct (maxinf) where
+module Direct (D(..), maxinf, maxinfD) where
 
 import Control.Applicative
 import Control.Monad
@@ -25,7 +25,9 @@ import Debug.Trace
 import Text.Show (showListWith)
 
 import Expr
-import ByName
+import qualified ByName
+
+orElse = flip fromMaybe
 
 -- | Finite intialisation trace to infinite or maximal finite trace.
 --
@@ -82,6 +84,9 @@ step a l sem = D $ \p -> ConsT (dst p) a $ unD sem $ SnocT p a l
 (!⊥) :: Ord a => (a :-> D) -> a -> D
 env !⊥ x = Map.findWithDefault botD x env
 
+maxinfD :: LExpr -> (Name :-> D) -> D
+maxinfD le env = D (maxinf le env)
+
 maxinf :: LExpr -> (Name :-> D) -> Trace D -> Trace D
 maxinf le env p
   | dst p /= le.at = unD botD p -- stuck. act as bottom! Only happens on the initial call, I guess???
@@ -92,18 +97,18 @@ maxinf le env p
     go le !env = case le.thing of
       Var n -> env !⊥ n
       App le n -> D $ \p ->
-        let p2 = unD (step (AppA n) le.at (go le env)) p
+        let p2 = unD (step AppA le.at (go le env)) p
          in concatT p2 $ case val p2 of
               Just (Fun f) -> unD (f (env !⊥ n)) (concatT p p2)
               Nothing      -> undefined -- actually Bottom! Can't happen in a closed
                                         -- program without Data types, though
       Lam n le' ->
-        let val = Fun (\d -> step (BetaA n) (le'.at) (go le' (Map.insert n d env)))
+        let val = Fun (\d -> step BetaA (le'.at) (go le' (Map.insert n d env)))
          in D $ \_ -> ConsT le.at (ValA val) (End le.after)
       Let n le1 le2 ->
         let d = step EnterA le1.at (go le1 env')
             env' = Map.insert n d env
-         in step (BindA n le1.at d) le2.at (go le2 env')
+         in step BindA le2.at (go le2 env')
 
 -- post(go le []) will be the reachability semantics, e.g., small-step!
 -- Wart: Instead of a (set of) Trace `t`, it should take a (set of) Configuration `c`
@@ -115,5 +120,18 @@ maxinf le env p
 -- enumerate.
 --
 -- Note that we never look at the `Expr` returned by the indexing function.
-post :: LExpr -> D -> Trace D -> Label -> [Configuration]
-post le d p l = map (config (unlabel le) . concatT p) (tracesAt l (unD d p))
+post :: LExpr -> D -> Trace D -> Label -> [ByName.Configuration]
+post le d p l = map (ByName.config (unlabel le) . concatT p) (tracesAt l (unD d p))
+
+absD :: Label -> D -> ByName.D
+absD l (D d) = case val (d (End l)) of
+  Just (Fun f) -> ByName.V (Fun (absD l . f . concD l))
+  Nothing      -> ByName.Bottom
+
+concD :: Label -> ByName.D -> D
+concD l ByName.Bottom      = botD
+concD l (ByName.V (Fun f)) = undefined -- ⊔{ d | absD l d = V (Fun f) }
+ -- Huh, concD is nto well-defined, because those ds might not form a chain.
+ -- Ah, but that is just a result of the domain no longer being singleton traces {{π}}.
+ -- In the proper powerset lattice we should be fine.
+ -- I think we might need to start from the abstract interpreter.

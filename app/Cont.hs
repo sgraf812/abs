@@ -9,7 +9,7 @@
 {-# LANGUAGE ImpredicativeTypes #-}
 {-# LANGUAGE MultiWayIf #-}
 
-module Cont (maxinf) where
+module Cont (C(..), maxinf, absD, concD) where
 
 import Control.Applicative
 import Control.Monad
@@ -23,6 +23,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Debug.Trace
 import Text.Show (showListWith)
+import qualified Direct
 
 import Expr
 import ByName
@@ -71,24 +72,89 @@ maxinf le env p
                     Just (Fun f) -> unC (f (env !⊥ n)) (concatT p p2) (concatT p2)
                     Nothing      -> undefined -- actually Bottom! Can't happen in a closed
                                               -- program without Data types, though
-         in unC (step (AppA n) le.at (go le env)) p (k . apply)
+         in unC (step AppA le.at (go le env)) p (k . apply)
       Lam n le ->
-        let val = Fun (\c -> step (BetaA n) (le.at) (go le (Map.insert n c env)))
+        let val = Fun (\c -> step BetaA (le.at) (go le (Map.insert n c env)))
          in C $ \_p k -> k (ConsT le.at (ValA val) (End le.after))
       Let n le1 le2 ->
         let c = step EnterA le1.at (go le1 env')
             env' = Map.insert n c env
-         in step (BindA n le1.at c) le2.at (go le2 env')
+         in step BindA le2.at (go le2 env')
 
--- post(go le []) will be the reachability semantics, e.g., small-step!
--- Wart: Instead of a (set of) Trace `t`, it should take a (set of) Configuration `c`
--- such that `config p = c` (that is, we don't know how to efficiently compute
--- the concretisation function γ(cs) = ts). By doing it this way, we can
--- actually compute.
--- The lifting to sets (of initialisation Traces/Configurations) is routine.
--- we return a list instead of a set, because it might be infinite and we want to
--- enumerate.
+-- | As Reynolds first proved in "On the relation between Direct and
+-- Continuation Semantics", we have `concD . absD = id`. In our case,
+-- parametricity also gives us `absD . concD = id` by the following
+-- observation:
 --
--- Note that we never look at the `Expr` returned by the indexing function.
---post :: LExpr -> E -> Trace E -> Label -> [Configuration]
---post le d p l = map (config (unlabel le) . concatT p) (tracesAt l (unE d p))
+-- Observation: By parametricity, any `c::C` must be of the form
+-- `\p k -> k (f p)` for some `f::Trace C -> Trace C`.
+--
+-- First off, two lemmas about trace abstraction and botE and botD:
+--  1. concTrace.botE.absTrace = unD botD
+--  2. absTrace.unD botD.concTrace = botE
+--
+-- Equipped with that knowledge, we can proceed by well-founded induction over
+-- By well-founded induction over the domain C.
+--
+-- Here is the proof for n=0:
+--   concD(absD botD)
+-- = concD(C $ \p k -> k . absTrace . unD botD . concTrace $ p)
+-- = concD(C $ \p k -> k (botE p))
+-- = botC
+--
+--   absD(concD botC)
+-- = absD(concD (C (\p k -> k (botE p))))
+-- = C $ \p k -> k $ absTrace (concTrace (botE (absTrace (concTrace p))))
+-- = C $ \p k -> k $ absTrace (unD botD (concTrace p))  { lemma (1) }
+-- = C $ \p k -> k $ botE p                             { lemma (2) }
+-- = botC
+--
+-- For the inductive step, assume that The recursive calls to (absD . concD)
+-- (concD . absD) have been show to be id for universe levels lower than the
+-- current one n+1.
+--
+-- concD(absD (D d))
+-- = concD (C $ \p k -> k . absTrace . d . concTrace $ p)
+-- = D $ \p -> (\p k -> k . absTrace . d . concTrace $ p) (absTrace p) concTrace
+-- = D $ \p -> concTrace . absTrace . d . concTrace . absTrace $ p
+--   { apply IH, get (concTrace . absTrace = id) for sub-terms }
+-- = D $ \p -> id . d . id $ p
+-- = D d
+--
+-- absD(concD c)
+-- = absD(concD (C (\p k -> k (f p))))    { parametricity }
+-- = absD(D $ \p -> (\p k -> k (f p)) (absTrace p) concTrace)
+-- = absD(D $ \p -> concTrace (f (absTrace p)))
+-- = C $ \p k -> k . absTrace . (\p -> concTrace (f (absTrace p))) . concTrace $ p
+-- = C $ \p k -> k $ absTrace (concTrace (f (absTrace (concTrace p))))
+--   { apply IH, get (absTrace . concTrace = id) for sub-terms }
+-- = C $ \p k -> k $ id (f (id p))
+-- = C $ \p k -> k (f p)
+-- = c
+absD :: Direct.D -> Cont.C
+absD (Direct.D d) = Cont.C $ \p k -> k . absTrace . d . concTrace $ p
+
+concD :: Cont.C -> Direct.D
+concD (Cont.C c) = Direct.D $ \p -> c (absTrace p) concTrace
+
+absValue :: Value Direct.D -> Value Cont.C
+absValue (Fun f) = Fun (absD . f . concD)
+
+absAction :: Action Direct.D -> Action Cont.C
+absAction = dimapAction absD concD
+
+concAction :: Action Cont.C -> Action Direct.D
+concAction = dimapAction concD absD
+
+-- | (Inductive) Assumption: (absD . concD = id), (concD . absD = id)
+--
+--   absTrace (concTrace p)
+-- = dimapTrace absD concD (dimapTrace concD absD p)
+-- = dimapTrace (absD . concD) (concD . absD) p
+-- = dimapTrace id id p
+-- = p
+absTrace :: Trace Direct.D -> Trace Cont.C
+absTrace = dimapTrace absD concD
+
+concTrace :: Trace Cont.C -> Trace Direct.D
+concTrace = dimapTrace concD absD

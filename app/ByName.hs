@@ -9,7 +9,7 @@
 {-# LANGUAGE ImpredicativeTypes #-}
 {-# LANGUAGE MultiWayIf #-}
 
-module ByName (Configuration, Heap, Stack, Frame(..), smallStep, config, defnSmallStep) where
+module ByName (Configuration, Heap, Stack, Frame(..), smallStep, config, defnSmallStep, D(..), denot) where
 
 import Control.Applicative
 import Control.Monad
@@ -26,13 +26,12 @@ import Text.Show (showListWith)
 
 import Expr
 
+orElse = flip fromMaybe
+
 type Configuration = (Heap, Expr, Stack)
 type Heap = Name :-> Expr
 type Stack = [Frame]
-data Frame = Apply Name
-
-instance Show Frame where
-  show (Apply x) = "$" ++ x
+-- data Frame = Apply Name -- defined in Expr
 
 instance {-# OVERLAPPING #-} Show Heap where
   showsPrec _ h = showListWith (\(x, e) -> ((x ++ "↦" ++ show e) ++)) $ Map.assocs h
@@ -62,15 +61,15 @@ config e p = go (snocifyT p)
     go (SnocT t a l) =
       let c@(h,Fix e,s) = go t in
       case a of
-        BindA _ _ _  | Let n e1 e2 <- e ->
+        BindA        | Let n e1 e2 <- e ->
           let n' = freshName n h
               e1' = subst n n' e1
               e2' = subst n n' e2
            in (Map.insert n' e1' h, e2', s)
-        AppA _       | App e n <- e -> (h, e, Apply n:s)
+        AppA         | App e n <- e -> (h, e, Apply n:s)
         ValA (Fun _) | Lam _ _ <- e -> c -- No corresponding small-step transition
-        BetaA _      | (Apply n':s') <- s, Lam n eb <- e -> (h, subst n n' eb, s')
-        EnterA      | Var n <- e -> (h, h Map.! n, s)
+        BetaA        | (Apply n':s') <- s, Lam n eb <- e -> (h, subst n n' eb, s')
+        EnterA       | Var n <- e -> (h, h Map.! n, s)
         _ -> undefined
 
 defnSmallStep :: Show d => Expr -> (Trace d -> Trace d) -> [Configuration]
@@ -81,3 +80,23 @@ defnSmallStep e sem = map (config e) $ filter (not . lastIsVal) $ (prefs (sem (E
     lastIsVal t = case snocifyT t of
       SnocT _ ValA{} _ -> True
       _                -> False
+
+
+data D = V (Value D)
+       | Bottom
+       deriving Show
+
+(!⊥) :: Ord a => (a :-> D) -> a -> D
+env !⊥ x = Map.findWithDefault Bottom x env
+
+denot :: Expr -> (Name :-> D) -> D
+denot (Fix e) env = case e of
+  Var n   -> env Map.!? n `orElse` Bottom
+  Lam n e -> V (Fun (\d -> denot e (Map.insert n d env)))
+  App e n -> case denot e env of
+    V (Fun f) -> f (env !⊥ n)
+    _         -> Bottom
+  Let n e1 e2 ->
+    let env' = Map.insert n (denot e1 env') env in
+    denot e2 env'
+

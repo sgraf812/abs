@@ -86,10 +86,10 @@ atToAfter :: LExpr -> Label -> Label
 atToAfter e at = (indexAtLE at e).after
 
 data Action d
-  = AppA !Name
+  = AppA
   | ValA !(Value d)
-  | BetaA !Name
-  | BindA !Name !Label !d
+  | BetaA
+  | BindA
   | EnterA
   deriving (Eq, Ord, Show)
 
@@ -131,6 +131,21 @@ dst (End l) = l
 dst (SnocT _ _ l) = l
 dst (ConsT _ _ t) = dst t
 
+dimapTrace :: (d1 -> d2) -> (d2 -> d1) -> Trace d1 -> Trace d2
+dimapTrace to from (End l) = End l
+dimapTrace to from (ConsT l a t) = ConsT l (dimapAction to from a) (dimapTrace to from t)
+dimapTrace to from (SnocT t a l) = SnocT (dimapTrace to from t) (dimapAction to from a) l
+
+dimapAction :: (d1 -> d2) -> (d2 -> d1) -> Action d1 -> Action d2
+dimapAction to from AppA     = AppA
+dimapAction to from (ValA v) = ValA (dimapValue to from v)
+dimapAction to from BetaA    = BetaA
+dimapAction to from BindA    = BindA
+dimapAction to from EnterA   = EnterA
+
+dimapValue :: (d1 -> d2) -> (d2 -> d1) -> Value d1 -> Value d2
+dimapValue to from (Fun f) = Fun (to . f . from)
+
 consifyT :: Trace d -> Trace d
 consifyT t = go End t
   where
@@ -162,6 +177,15 @@ takeT n t = go n (consifyT t)
     go n (ConsT l a t) = ConsT l a (takeT (n - 1) t)
     go _ SnocT {} = error "impossible"
 
+dropT :: Int -> Trace d -> Trace d
+dropT 0 t = t
+dropT n t = go n (consifyT t)
+  where
+    go 0 t = t
+    go _ (End l) = End l
+    go n (ConsT _ _ t) = dropT (n - 1) t
+    go _ SnocT{} = error "impossible"
+
 lenT :: Trace d -> Int
 lenT (End _) = 0
 lenT (ConsT _ _ t) = 1 + lenT t
@@ -180,9 +204,13 @@ val :: Trace d -> Maybe (Value d)
 val t = go (snocifyT t)
   where
     go (End _) = Nothing
-    go (SnocT t a l)
-      | ValA val <- a = Just val
-      | otherwise = go t
+    go (SnocT t a l) = case a of
+      ValA val -> Just val
+      AppA     -> Nothing
+      BetaA    -> Nothing
+      BindA    -> Nothing
+      EnterA   -> Nothing
+      --UpdateA -> go t -- call-by-need update frames are transparent!
     go ConsT {} = error "invalid"
 
 type (:->) = Map
@@ -227,32 +255,51 @@ freshName n h = go n
       | n `Map.member` h = go (n ++ "'")
       | otherwise = n
 
-data ActionBalance d
-  = Open !(Action d)
-  | Close !(Action d)
+data Frame = Apply Name deriving Eq
+
+instance Show Frame where
+  show (Apply x) = "$" ++ x
+
+data ActionBalance
+  = Open !Frame
+  | Close !Frame
   | Tail -- "tail call"
   | Balanced
+  deriving (Eq, Show)
 
-classifyAction :: Action d -> ActionBalance d
-classifyAction ValA{}   = Balanced
-classifyAction AppA{}   = Open (BetaA "never looked at")
-classifyAction BetaA{}  = Close (AppA "never looked at")
-classifyAction BindA{}  = Tail
-classifyAction EnterA{} = Tail
+matchActionBalance :: Action d -> ActionBalance
+matchActionBalance ValA{}   = Balanced
+matchActionBalance AppA{}   = Open  (Apply "")
+matchActionBalance BetaA{}  = Close (Apply "")
+matchActionBalance BindA{}  = Tail
+matchActionBalance EnterA{} = Tail
+
+sameActionKind :: Action d -> Action d -> Bool
+sameActionKind ValA{}   ValA{}   = True
+sameActionKind AppA{}   AppA{}   = True
+sameActionKind BetaA{}  BetaA{}  = True
+sameActionKind BindA{}  BindA{}  = True
+sameActionKind EnterA{} EnterA{} = True
+sameActionKind _        _        = False
 
 splitBalancedExecution :: Show d => (Label -> Label) -> Trace d -> Maybe (Trace d, Trace d)
 splitBalancedExecution end p = open [] (End (src p)) (consifyT p)
   where
     shift acc (ConsT l a t) k = k (SnocT acc a (src t)) t
     shift acc (End l)       k = k acc (End l)
-    open as acc (End _) = Nothing -- TODO: Perhaps this should succeed if ls is empty? No, because we must ultimately hit a value
-    open as acc (ConsT l a t) = case openingBracket a of
-      Just a' -> shift acc t (go (a':as))
-      Nothing -> shift acc t (open as)
+    open fs acc (End _) = Nothing -- No transition => no opening => No balanced execution! NB: Values are Balanced and do a ValA transition
+    open fs acc t@(ConsT l a t') = case matchActionBalance a of
+      Open f'  -> shift acc t (go (f':fs)) -- Found an Open. Just balancing the stack from hereon, the job of go.
+      Balanced -> shift acc t (go fs)      -- Balanced is like Open followed by Close
+      Close _  -> Nothing                  -- Need an Open first! => Unbalanced
+      Tail     -> shift acc t (open fs)    -- No effect on balance (unlike Balanced). Still looking for Open, hence recurse with open
     go [] acc t = Just (acc, t) -- done
-    go (a:as) acc t = case t of
+    go (f:fs) acc t = case t of
       End _ -> Nothing
-      ConsT _ a' t'
-        | closingBracket a a'         -> shift acc t (go as)        -- pop
-        | Just a' <- openingBracket a -> shift acc t (go (a':a:as)) -- push a'
-        | otherwise                   -> shift acc t (go (a:as))    -- neutral, just shift
+      ConsT _ a' t' -> case matchActionBalance a' of
+        Open f'                 -> shift acc t (go (f':f:fs)) -- push
+        Close f'
+          | f == f'             -> shift acc t (go fs)        -- pop
+          | otherwise           -> Nothing                    -- unbalanced/stuck. Should not happen for any trace generated by the semantics, so perhaps undefined?
+        Tail                    -> shift acc t (go (f:fs))    -- just shift
+        Balanced                -> shift acc t (go (f:fs))    -- just shift, too: It's fs if we first pushed an then popped

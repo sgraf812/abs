@@ -1,16 +1,18 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE OverloadedRecordDot #-}
-{-# LANGUAGE TypeOperators #-}
-{-# LANGUAGE TypeSynonymInstances #-}
-{-# LANGUAGE DeriveFunctor #-}
-{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ImpredicativeTypes #-}
 {-# LANGUAGE MultiWayIf #-}
+{-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE TypeSynonymInstances #-}
 
 module Main (main) where
 
+import ByName
+import qualified Cont
 import Control.Applicative
 import Control.Monad
 import Control.Monad.Trans.State
@@ -22,12 +24,9 @@ import Data.Ord
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Debug.Trace
-import Text.Show (showListWith)
-
-import Expr
-import ByName
 import qualified Direct
-import qualified Cont
+import Expr
+import Text.Show (showListWith)
 
 x, y, z :: Expr
 x : y : z : _ = map (Fix . Var . (: [])) "xyz"
@@ -64,16 +63,21 @@ ew2 = label $ let_ "x" (app x "x") x
 -- [1]-BindA "x" 6 D->[2]-AppA "x"->[3]-AppA "x"->[4]-EnterA->[6]-ValA Fun->[9]-BetaA "y"->[7]-EnterA->[6]-ValA Fun->[9]-BetaA "y"->[7]-EnterA->[6]-ValA Fun->[9]
 main :: IO ()
 -- main = forM_ [e1, e2, estuck, ew, ew2] $ \e -> do
-main = forM_ [e1, e2] $ \e -> do
+main = forM_ [e1, e2, estuck] $ \e -> do
   putStrLn "----------------"
   print e
   putStrLn "maximal and infinite trace"
+  print $ ByName.denot (unlabel e) Map.empty
+  putStrLn "maximal and infinite trace"
   print $ takeT 15 $ Direct.maxinf e Map.empty (End (at e))
+  putStrLn "maximal and infinite trace continuation semantics"
+  print $ takeT 15 $ Cont.unC (Cont.absD (Direct.maxinfD e Map.empty)) (End (at e)) id
   putStrLn "smallStep"
   mapM_ print $ take 10 $ smallStep (unlabel e)
   putStrLn "tracesAt 2"
   mapM_ print $ tracesAt 2 $ takeT 10 $ Direct.maxinf e Map.empty (End (at e))
   putStrLn "defnSmallStep"
   mapM_ print $ take 10 $ defnSmallStep (unlabel e) (Direct.maxinf e Map.empty)
-  putStrLn "splitBalancedExecution"
-  --forM_ [1..20] $ \n -> print $ splitBalancedExecution (atToAfter e) $ takeT n $ Direct.maxinf e Map.empty (End (at e))
+
+-- putStrLn "splitBalancedExecution"
+-- forM_ [20,19..0] $ \n -> print $ splitBalancedExecution (atToAfter e) $ dropT n $ Direct.maxinf e Map.empty (End (at e))
