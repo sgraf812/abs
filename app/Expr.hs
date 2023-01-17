@@ -18,6 +18,7 @@ import Data.Ord
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Text.Show (showListWith)
+import Debug.Trace
 
 type Name = String
 
@@ -69,14 +70,20 @@ unlabel le = Fix $ case le.thing of
   Let x e1 e2 -> Let x (unlabel e1) (unlabel e2)
 
 indexAtE :: Label -> LExpr -> Expr
-indexAtE l e = fromJust (find e)
+indexAtE l e = unlabel $ indexAtLE l e
+
+indexAtLE :: Label -> LExpr -> LExpr
+indexAtLE l e = fromMaybe (error (show l ++ " " ++ show e)) (find e)
   where
-    find le@(Lab {at = at, thing = e}) | at == l = Just (unlabel le)
+    find le@(Lab {at = at, thing = e}) | at == l = Just le
     find le = case le.thing of
       Var _ -> Nothing
       App e _ -> find e
       Lam _ e -> find e
       Let _ e1 e2 -> find e1 <|> find e2
+
+atToAfter :: LExpr -> Label -> Label
+atToAfter e at = (indexAtLE at e).after
 
 data Action d
   = AppA !Name
@@ -219,3 +226,17 @@ freshName n h = go n
     go n
       | n `Map.member` h = go (n ++ "'")
       | otherwise = n
+
+splitBalancedExecution :: Show d => (Label -> Label) -> Trace d -> Maybe (Trace d, Trace d)
+splitBalancedExecution end p = traceShow p $ open [] (End (src p)) (consifyT p)
+  where
+    shift ls acc (ConsT l a t) = go ls (SnocT acc a (src t)) t
+    shift ls acc (End l)       = go ls acc (End l)
+    open ls acc t = shift (end (src t):ls) acc t
+    close []     acc t = go [] acc t
+    close ls acc t = shift (dropWhile (== src t) ls) acc t
+    go [] acc t = Just (acc, t) -- done
+    go (l:ls) acc t = traceShow (l:ls) $ case t of
+      _ | l == src t -> close (l:ls) acc t       -- close l
+      ConsT l' a t'  -> open (l:ls) acc t -- open l'
+      End _          -> Nothing           -- open l', but we'll never close it. Hence abort!

@@ -97,8 +97,8 @@ maxinf le env p
               Just (Fun f) -> unD (f (env !⊥ n)) (concatT p p2)
               Nothing      -> undefined -- actually Bottom! Can't happen in a closed
                                         -- program without Data types, though
-      Lam n le ->
-        let val = Fun (\d -> step (BetaA n) (le.at) (go le (Map.insert n d env)))
+      Lam n le' ->
+        let val = Fun (\d -> step (BetaA n) (le'.at) (go le' (Map.insert n d env)))
          in D $ \_ -> ConsT le.at (ValA val) (End le.after)
       Let n le1 le2 ->
         let d = step LookupA le1.at (go le1 env')

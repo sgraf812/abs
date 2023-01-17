@@ -64,14 +64,16 @@ ew2 = label $ let_ "x" (app x "x") x
 -- [1]-LeaveLetA->[6]-AppA->[7]-AppA->[8]-LookupA->[2]-ValA Fun->[5]-BetaA->[3]-LookupA->[2]-ValA Fun->[5]-BetaA->[3]-LookupA->[2]-ValA Fun->[5]-BindA "x" D->[10]
 main :: IO ()
 -- main = forM_ [e1, e2, estuck, ew, ew2] $ \e -> do
-main = forM_ [e1, e2, estuck] $ \e -> do
+main = forM_ [e1, e2] $ \e -> do
   putStrLn "----------------"
   print e
   putStrLn "maximal and infinite trace"
-  print $ takeT 10 $ Cont.maxinf e Map.empty (End (at e))
+  print $ takeT 10 $ Direct.maxinf e Map.empty (End (at e))
   putStrLn "smallStep"
   mapM_ print $ take 10 $ smallStep (unlabel e)
   putStrLn "tracesAt 2"
-  mapM_ print $ tracesAt 2 $ takeT 10 $ Cont.maxinf e Map.empty (End (at e))
+  mapM_ print $ tracesAt 2 $ takeT 10 $ Direct.maxinf e Map.empty (End (at e))
   putStrLn "defnSmallStep"
-  mapM_ print $ take 10 $ defnSmallStep (unlabel e) (Cont.maxinf e Map.empty)
+  mapM_ print $ take 10 $ defnSmallStep (unlabel e) (Direct.maxinf e Map.empty)
+  putStrLn "splitBalancedExecution"
+  forM_ [1..20] $ \n -> print $ splitBalancedExecution (atToAfter e) $ takeT n $ Direct.maxinf e Map.empty (End (at e))
