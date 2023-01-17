@@ -51,7 +51,7 @@ label (Fix e) = evalState (lab e) 1
     lab e = do
       at <- next
       (le, after) <- case e of
-        Var n -> (,) (Var n) <$> next
+        Var n -> (,) (Var n) <$> next -- this label will never be used
         App (Fix e) n -> do
           le <- lab e
           pure (App le n, after le)
@@ -91,7 +91,6 @@ data Action d
   | BetaA !Name
   | BindA !Name !Label !d
   | EnterA
-  | LeaveA
   deriving (Eq, Ord, Show)
 
 data Value d = Fun (d -> d)
@@ -121,8 +120,8 @@ instance Show LExpr where
   show le = case le.thing of
     App e n -> show le.at ++ "(" ++ show e ++ "@" ++ n ++ ")"
     Lam n e -> show le.at ++ "(" ++ "λ" ++ n ++ ". " ++ show e ++ ")" ++ show le.after
-    Var n -> show le.at ++ "(" ++ n ++ ")" ++ show le.after
-    Let n e1 e2 -> show le.at ++ "(" ++ "let " ++ n ++ " = " ++ show e1 ++ " in " ++ show e2 ++ ")" ++ show le.after
+    Var n -> show le.at ++ "(" ++ n ++ ")"
+    Let n e1 e2 -> show le.at ++ "(" ++ "let " ++ n ++ " = " ++ show e1 ++ " in " ++ show e2 ++ ")"
 
 src, dst :: Trace d -> Label
 src (End l) = l
@@ -228,16 +227,32 @@ freshName n h = go n
       | n `Map.member` h = go (n ++ "'")
       | otherwise = n
 
+data ActionBalance d
+  = Open !(Action d)
+  | Close !(Action d)
+  | Tail -- "tail call"
+  | Balanced
+
+classifyAction :: Action d -> ActionBalance d
+classifyAction ValA{}   = Balanced
+classifyAction AppA{}   = Open (BetaA "never looked at")
+classifyAction BetaA{}  = Close (AppA "never looked at")
+classifyAction BindA{}  = Tail
+classifyAction EnterA{} = Tail
+
 splitBalancedExecution :: Show d => (Label -> Label) -> Trace d -> Maybe (Trace d, Trace d)
-splitBalancedExecution end p = traceShow p $ open [] (End (src p)) (consifyT p)
+splitBalancedExecution end p = open [] (End (src p)) (consifyT p)
   where
-    shift ls acc (ConsT l a t) = go ls (SnocT acc a (src t)) t
-    shift ls acc (End l)       = go ls acc (End l)
-    open ls acc t = shift (end (src t):ls) acc t
-    close []     acc t = go [] acc t
-    close ls acc t = shift (dropWhile (== src t) ls) acc t
+    shift acc (ConsT l a t) k = k (SnocT acc a (src t)) t
+    shift acc (End l)       k = k acc (End l)
+    open as acc (End _) = Nothing -- TODO: Perhaps this should succeed if ls is empty? No, because we must ultimately hit a value
+    open as acc (ConsT l a t) = case openingBracket a of
+      Just a' -> shift acc t (go (a':as))
+      Nothing -> shift acc t (open as)
     go [] acc t = Just (acc, t) -- done
-    go (l:ls) acc t = traceShow (l:ls) $ case t of
-      _ | l == src t -> close (l:ls) acc t       -- close l
-      ConsT l' a t'  -> open (l:ls) acc t -- open l'
-      End _          -> Nothing           -- open l', but we'll never close it. Hence abort!
+    go (a:as) acc t = case t of
+      End _ -> Nothing
+      ConsT _ a' t'
+        | closingBracket a a'         -> shift acc t (go as)        -- pop
+        | Just a' <- openingBracket a -> shift acc t (go (a':a:as)) -- push a'
+        | otherwise                   -> shift acc t (go (a:as))    -- neutral, just shift

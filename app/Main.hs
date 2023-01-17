@@ -68,7 +68,7 @@ main = forM_ [e1, e2] $ \e -> do
   putStrLn "----------------"
   print e
   putStrLn "maximal and infinite trace"
-  print $ takeT 10 $ Direct.maxinf e Map.empty (End (at e))
+  print $ takeT 15 $ Direct.maxinf e Map.empty (End (at e))
   putStrLn "smallStep"
   mapM_ print $ take 10 $ smallStep (unlabel e)
   putStrLn "tracesAt 2"
@@ -76,4 +76,4 @@ main = forM_ [e1, e2] $ \e -> do
   putStrLn "defnSmallStep"
   mapM_ print $ take 10 $ defnSmallStep (unlabel e) (Direct.maxinf e Map.empty)
   putStrLn "splitBalancedExecution"
-  forM_ [1..20] $ \n -> print $ splitBalancedExecution (atToAfter e) $ takeT n $ Direct.maxinf e Map.empty (End (at e))
+  --forM_ [1..20] $ \n -> print $ splitBalancedExecution (atToAfter e) $ takeT n $ Direct.maxinf e Map.empty (End (at e))
