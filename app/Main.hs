@@ -62,22 +62,29 @@ ew2 = label $ let_ "x" (app x "x") x
 -- >>> takeT 20 $ Direct.maxinf e2 Map.empty (End (at e2))
 -- [1]-BindA "x" 6 D->[2]-AppA "x"->[3]-AppA "x"->[4]-EnterA->[6]-ValA Fun->[9]-BetaA "y"->[7]-EnterA->[6]-ValA Fun->[9]-BetaA "y"->[7]-EnterA->[6]-ValA Fun->[9]
 main :: IO ()
--- main = forM_ [e1, e2, estuck, ew, ew2] $ \e -> do
-main = forM_ [e1, e2, estuck] $ \e -> do
-  putStrLn "----------------"
+main = forM_ [e1, e2, estuck, ew, ew2] $ \e -> do
+-- main = forM_ [e1, e2, estuck] $ \e -> do
+  putStrLn "============================="
+  putStrLn ""
   print e
-  putStrLn "maximal and infinite trace"
-  print $ ByName.denot (unlabel e) Map.empty
-  putStrLn "maximal and infinite trace"
+  putStrLn ""
+--  putStrLn "denotational semantics"
+--  print $ ByName.denot (unlabel e) Map.empty
+  putStrLn "-----------------------------"
+  putStrLn "maximal and infinite trace (scary maximal trace semantics)"
   print $ takeT 15 $ Direct.maxinf e Map.empty (End (at e))
-  putStrLn "maximal and infinite trace continuation semantics"
-  print $ takeT 15 $ Cont.unC (Cont.absD (Direct.maxinfD e Map.empty)) (End (at e)) id
-  putStrLn "smallStep"
+  putStrLn "-----------------------------"
+--  putStrLn "maximal and infinite trace continuation semantics"
+--  print $ takeT 15 $ Cont.unC (Cont.absD (Direct.maxinfD e Map.empty)) (End (at e)) id
+  putStrLn "smallStep (transition system)"
   mapM_ print $ take 10 $ smallStep (unlabel e)
-  putStrLn "tracesAt 2"
-  mapM_ print $ tracesAt 2 $ takeT 10 $ Direct.maxinf e Map.empty (End (at e))
-  putStrLn "defnSmallStep"
+  putStrLn "-----------------------------"
+--  putStrLn "tracesAt 2"
+--  mapM_ print $ tracesAt 2 $ takeT 10 $ Direct.maxinf e Map.empty (End (at e))
+  putStrLn "defnSmallStep (derived from maximal trace semantics)"
   mapM_ print $ take 10 $ defnSmallStep (unlabel e) (Direct.maxinf e Map.empty)
+  putStrLn "-----------------------------"
+  putStrLn ""
 
 -- putStrLn "splitBalancedExecution"
 -- forM_ [20,19..0] $ \n -> print $ splitBalancedExecution (atToAfter e) $ dropT n $ Direct.maxinf e Map.empty (End (at e))
