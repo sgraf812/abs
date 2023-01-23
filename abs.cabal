@@ -28,7 +28,7 @@ executable abs
     other-modules:    Expr
                       Direct
                       Cont
-                      ByName
+                      ByNeed
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:

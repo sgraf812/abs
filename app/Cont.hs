@@ -26,7 +26,7 @@ import Text.Show (showListWith)
 import qualified Direct
 
 import Expr
-import ByName
+import ByNeed
 
 newtype C = C { unC :: forall r. Trace C -> (Trace C -> r) -> r }
 type E = Trace C -> Trace C
@@ -72,14 +72,14 @@ maxinf le env p
                     Just (Fun f) -> unC (f (env !⊥ n)) (concatT p p2) (concatT p2)
                     Nothing      -> undefined -- actually Bottom! Can't happen in a closed
                                               -- program without Data types, though
-         in unC (step AppA le.at (go le env)) p (k . apply)
+         in unC (step App1A le.at (go le env)) p (k . apply)
       Lam n le ->
-        let val = Fun (\c -> step BetaA (le.at) (go le (Map.insert n c env)))
+        let val = Fun (\c -> step App2A (le.at) (go le (Map.insert n c env)))
          in C $ \_p k -> k (ConsT le.at (ValA val) (End le.after))
-      Let n le1 le2 ->
-        let c = step EnterA le1.at (go le1 env')
+      Let n le1 le2 -> C $ \p ->
+        let c = step (LookupA p) le1.at (go le1 env')
             env' = Map.insert n c env
-         in step BindA le2.at (go le2 env')
+         in unC (step BindA le2.at (go le2 env')) p
 
 -- | As Reynolds first proved in "On the relation between Direct and
 -- Continuation Semantics", we have `concD . absD = id`. In our case,

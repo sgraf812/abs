@@ -11,7 +11,7 @@
 
 module Main (main) where
 
-import ByName
+import ByNeed
 import qualified Cont
 import Control.Applicative
 import Control.Monad
@@ -73,7 +73,7 @@ e_w2 = label $ let_ "x" (app x "x") x
 -- 1(let x = 6(λy. 7(y)8)9 in 2(3(4(x)5@x)@x))5
 --
 -- >>> takeT 20 $ Direct.maxinf e_2 Map.empty (End (at e_2))
--- [1]-BindA "x" 6 D->[2]-AppA "x"->[3]-AppA "x"->[4]-EnterA->[6]-ValA Fun->[9]-BetaA "y"->[7]-EnterA->[6]-ValA Fun->[9]-BetaA "y"->[7]-EnterA->[6]-ValA Fun->[9]
+-- [1]-BindA "x" 6 D->[2]-App1A "x"->[3]-App1A "x"->[4]-LookupA->[6]-ValA Fun->[9]-App2A "y"->[7]-LookupA->[6]-ValA Fun->[9]-App2A "y"->[7]-LookupA->[6]-ValA Fun->[9]
 main :: IO ()
 main = forM_ [(10,e_1), (10,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_bool), (50,e_fresh)] $ \(n,e) -> do
 -- main = forM_ [e_1, e2, e_stuck] $ \e -> do
@@ -90,14 +90,16 @@ main = forM_ [(10,e_1), (10,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_bool)
 --  putStrLn "maximal and infinite trace continuation semantics"
 --  print $ takeT n $ Cont.unC (Cont.absD (Direct.maxinfD e Map.empty)) (End (at e)) id
   putStrLn "smallStep (transition system)"
-  mapM_ print $ take n $ smallStep (unlabel e)
+  let ss1 = take n $ smallStep (unlabel e)
+  mapM_ print ss1
   putStrLn "-----------------------------"
 --  putStrLn "tracesAt 2"
 --  mapM_ print $ tracesAt 2 $ takeT 10 $ Direct.maxinf e Map.empty (End (at e))
   putStrLn "defnSmallStep (derived from maximal trace semantics)"
-  mapM_ print $ take n $ defnSmallStep (unlabel e) (Direct.maxinf e Map.empty)
+  let ss2 = take n $ defnSmallStep (unlabel e) (Direct.maxinf e Map.empty)
+  mapM_ print ss2
   putStrLn "-----------------------------"
-  putStrLn ""
+  when (ss1 /= ss2) (error "NOT EQUAL")
 
--- putStrLn "splitBalancedExecution"
--- forM_ [20,19..0] $ \n -> print $ splitBalancedExecution (atToAfter e) $ dropT n $ Direct.maxinf e Map.empty (End (at e))
+--  putStrLn "splitBalancedExecution"
+--  forM_ [20,19..0] $ \m -> print $ fmap fst $ splitBalancedExecution $ dropT m $ takeT n $ Direct.maxinf e Map.empty (End (at e))

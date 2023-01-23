@@ -25,7 +25,7 @@ import Debug.Trace
 import Text.Show (showListWith)
 
 import Expr
-import qualified ByName
+import qualified ByNeed
 
 orElse = flip fromMaybe
 
@@ -81,6 +81,20 @@ instance Show D where
 step :: Action D -> Label -> D -> D
 step a l sem = D $ \p -> ConsT (dst p) a $ unD sem $ SnocT p a l
 
+memo :: Trace D -> Label -> D -> D
+memo pkey li sem = D $ \pi -> case lookup pkey (consifyT pi) of
+  Just pv -> ConsT (dst pi) (LookupA pkey) pv
+  Nothing -> unD (step (LookupA pkey) li sem) pi
+  where
+    lookup pk (ConsT _ a pi')
+      | LookupA pk' <- a
+      , pk == pk'
+      , Just (pb, _) <- splitBalancedExecution pi'
+      , trace ("found(" ++ show pk ++ "): " ++ show pb) True
+      = valT pb
+      | otherwise     = lookup pk pi'
+    lookup pk (End l) = Nothing
+
 (!⊥) :: Ord a => (a :-> D) -> a -> D
 env !⊥ x = Map.findWithDefault botD x env
 
@@ -96,18 +110,18 @@ maxinf le env p
     go le !env = case le.thing of
       Var n -> env !⊥ n
       App le n -> D $ \p ->
-        let p2 = unD (step AppA le.at (go le env)) p
+        let p2 = unD (step App1A le.at (go le env)) p
          in concatT p2 $ case val p2 of
               Just (Fun f) -> unD (f (env !⊥ n)) (concatT p p2)
               Nothing      -> unD botD (concatT p p2) -- Stuck! Can happen in an open program
                                                       -- Or with data types
       Lam n le' ->
-        let val = Fun (\d -> step BetaA (le'.at) (go le' (Map.insert n d env)))
+        let val = Fun (\d -> step App2A (le'.at) (go le' (Map.insert n d env)))
          in D $ \_ -> ConsT le.at (ValA val) (End le.after)
-      Let n le1 le2 ->
-        let d = step EnterA le1.at (go le1 env')
+      Let n le1 le2 -> D $ \p ->
+        let d = memo p le1.at (go le1 env')
             env' = Map.insert n d env
-         in step BindA le2.at (go le2 env')
+         in unD (step BindA le2.at (go le2 env')) p
 
 -- post(go le []) will be the reachability semantics, e.g., small-step!
 -- Wart: Instead of a (set of) Trace `t`, it should take a (set of) Configuration `c`
@@ -119,17 +133,17 @@ maxinf le env p
 -- enumerate.
 --
 -- Note that we never look at the `Expr` returned by the indexing function.
-post :: LExpr -> D -> Trace D -> Label -> [ByName.Configuration]
-post le d p l = map (ByName.config (unlabel le) . concatT p) (tracesAt l (unD d p))
+post :: LExpr -> D -> Trace D -> Label -> [ByNeed.Configuration]
+post le d p l = map (ByNeed.config (unlabel le) . concatT p) (tracesAt l (unD d p))
 
-absD :: Label -> D -> ByName.D
+absD :: Label -> D -> ByNeed.D
 absD l (D d) = case val (d (End l)) of
-  Just (Fun f) -> ByName.V (Fun (absD l . f . concD l))
-  Nothing      -> ByName.Bottom
+  Just (Fun f) -> ByNeed.V (Fun (absD l . f . concD l))
+  Nothing      -> ByNeed.Bottom
 
-concD :: Label -> ByName.D -> D
-concD l ByName.Bottom      = botD
-concD l (ByName.V (Fun f)) = undefined -- ⊔{ d | absD l d = V (Fun f) }
+concD :: Label -> ByNeed.D -> D
+concD l ByNeed.Bottom      = botD
+concD l (ByNeed.V (Fun f)) = undefined -- ⊔{ d | absD l d = V (Fun f) }
  -- Huh, concD is nto well-defined, because those ds might not form a chain.
  -- Ah, but that is just a result of the domain no longer being singleton traces {{π}}.
  -- In the proper powerset lattice we should be fine.

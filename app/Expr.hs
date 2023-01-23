@@ -19,6 +19,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Text.Show (showListWith)
 import Debug.Trace
+import Data.Bifunctor (first)
 
 type Name = String
 
@@ -57,9 +58,9 @@ label (Fix e) = evalState (lab e) 1
           pure (App le n, after le)
         Lam n (Fix e) -> (,) <$> (Lam n <$> lab e) <*> next
         Let n (Fix e1) (Fix e2) -> do
+          le1 <- lab e1
           le2 <- lab e2
-          le <- Let n <$> lab e1 <*> pure le2
-          pure (le, le2.after)
+          pure (Let n le1 le2, le2.after)
       pure Lab {at = at, thing = le, after = after}
 
 unlabel :: LExpr -> Expr
@@ -86,11 +87,11 @@ atToAfter :: LExpr -> Label -> Label
 atToAfter e at = (indexAtLE at e).after
 
 data Action d
-  = AppA
-  | ValA !(Value d)
-  | BetaA
+  = ValA !(Value d)
+  | App1A
+  | App2A
   | BindA
-  | EnterA
+  | LookupA !(Trace d)
   deriving (Eq, Ord, Show)
 
 data Value d = Fun (d -> d)
@@ -123,6 +124,22 @@ instance Show LExpr where
     Var n -> show le.at ++ "(" ++ n ++ ")"
     Let n e1 e2 -> show le.at ++ "(" ++ "let " ++ n ++ " = " ++ show e1 ++ " in " ++ show e2 ++ ")"
 
+instance Eq Expr where
+  e1 == e2 = go Map.empty Map.empty e1 e2
+    where
+      occ benv x = maybe (Left x) Right (Map.lookup x benv)
+      go benv1 benv2 (Fix e1) (Fix e2) = case (e1,e2) of
+        (Var x, Var y)         -> occ benv1 x == occ benv2 y
+        (App f x, App g y)     -> occ benv1 x == occ benv2 y && go benv1 benv2 f g
+        (Let x e1 e2, Let y e3 e4) -> go benv1' benv2' e1 e3 && go benv1' benv2' e2 e4
+          where
+            benv1' = Map.insert x (Map.size benv1) benv1
+            benv2' = Map.insert y (Map.size benv2) benv2
+        (Lam x e1', Lam y e2') -> go (Map.insert x (Map.size benv1) benv1)
+                                     (Map.insert y (Map.size benv2) benv2)
+                                     e1' e2'
+        _                      -> False
+
 src, dst :: Trace d -> Label
 src (End l) = l
 src (ConsT l _ _) = l
@@ -137,11 +154,11 @@ dimapTrace to from (ConsT l a t) = ConsT l (dimapAction to from a) (dimapTrace t
 dimapTrace to from (SnocT t a l) = SnocT (dimapTrace to from t) (dimapAction to from a) l
 
 dimapAction :: (d1 -> d2) -> (d2 -> d1) -> Action d1 -> Action d2
-dimapAction to from AppA     = AppA
-dimapAction to from (ValA v) = ValA (dimapValue to from v)
-dimapAction to from BetaA    = BetaA
-dimapAction to from BindA    = BindA
-dimapAction to from EnterA   = EnterA
+dimapAction to from App1A       = App1A
+dimapAction to from (ValA v)    = ValA (dimapValue to from v)
+dimapAction to from App2A       = App2A
+dimapAction to from BindA       = BindA
+dimapAction to from (LookupA t) = LookupA (dimapTrace to from t)
 
 dimapValue :: (d1 -> d2) -> (d2 -> d1) -> Value d1 -> Value d2
 dimapValue to from (Fun f) = Fun (to . f . from)
@@ -200,18 +217,22 @@ instance Ord (Value d) where
 instance Show (Value d) where
   show (Fun _) = "Fun"
 
-val :: Trace d -> Maybe (Value d)
-val t = go (snocifyT t)
+valT :: Trace d -> Maybe (Trace d)
+valT t = go (snocifyT t)
   where
     go (End _) = Nothing
     go (SnocT t a l) = case a of
-      ValA val -> Just val
-      AppA     -> Nothing
-      BetaA    -> Nothing
-      BindA    -> Nothing
-      EnterA   -> Nothing
-      --UpdateA -> go t -- call-by-need update frames are transparent!
+      ValA _    -> Just (ConsT (dst t) a (End l))
+      App1A     -> Nothing
+      App2A     -> Nothing
+      BindA     -> Nothing
+      LookupA _ -> Nothing
     go ConsT {} = error "invalid"
+
+val :: Trace d -> Maybe (Value d)
+val t = go <$> valT t
+  where
+    go (ConsT _ (ValA val) _) = val
 
 type (:->) = Map
 
@@ -255,51 +276,16 @@ freshName n h = go n
       | n `Map.member` h = go (n ++ "'")
       | otherwise = n
 
-data Frame = Apply Name deriving Eq
-
-instance Show Frame where
-  show (Apply x) = "$" ++ x
-
-data ActionBalance
-  = Open !Frame
-  | Close !Frame
-  | Tail -- "tail call"
-  | Balanced
-  deriving (Eq, Show)
-
-matchActionBalance :: Action d -> ActionBalance
-matchActionBalance ValA{}   = Balanced
-matchActionBalance AppA{}   = Open  (Apply "")
-matchActionBalance BetaA{}  = Close (Apply "")
-matchActionBalance BindA{}  = Tail
-matchActionBalance EnterA{} = Tail
-
-sameActionKind :: Action d -> Action d -> Bool
-sameActionKind ValA{}   ValA{}   = True
-sameActionKind AppA{}   AppA{}   = True
-sameActionKind BetaA{}  BetaA{}  = True
-sameActionKind BindA{}  BindA{}  = True
-sameActionKind EnterA{} EnterA{} = True
-sameActionKind _        _        = False
-
-splitBalancedExecution :: Show d => (Label -> Label) -> Trace d -> Maybe (Trace d, Trace d)
-splitBalancedExecution end p = open [] (End (src p)) (consifyT p)
+splitBalancedExecution :: Show d => Trace d -> Maybe (Trace d, Trace d)
+splitBalancedExecution p = work (consifyT p)
   where
-    shift acc (ConsT l a t) k = k (SnocT acc a (src t)) t
-    shift acc (End l)       k = k acc (End l)
-    open fs acc (End _) = Nothing -- No transition => no opening => No balanced execution! NB: Values are Balanced and do a ValA transition
-    open fs acc t@(ConsT l a t') = case matchActionBalance a of
-      Open f'  -> shift acc t (go (f':fs)) -- Found an Open. Just balancing the stack from hereon, the job of go.
-      Balanced -> shift acc t (go fs)      -- Balanced is like Open followed by Close
-      Close _  -> Nothing                  -- Need an Open first! => Unbalanced
-      Tail     -> shift acc t (open fs)    -- No effect on balance (unlike Balanced). Still looking for Open, hence recurse with open
-    go [] acc t = Just (acc, t) -- done
-    go (f:fs) acc t = case t of
-      End _ -> Nothing
-      ConsT _ a' t' -> case matchActionBalance a' of
-        Open f'                 -> shift acc t (go (f':f:fs)) -- push
-        Close f'
-          | f == f'             -> shift acc t (go fs)        -- pop
-          | otherwise           -> Nothing                    -- unbalanced/stuck. Should not happen for any trace generated by the semantics, so perhaps undefined?
-        Tail                    -> shift acc t (go (f:fs))    -- just shift
-        Balanced                -> shift acc t (go (f:fs))    -- just shift, too: It's fs if we first pushed an then popped
+    work (End _) = Nothing
+    work (ConsT l a p) = case a of
+      ValA _ -> Just (ConsT l a (End (src p)), p)
+      LookupA _ -> first (ConsT l a) <$> work p
+      BindA -> first (ConsT l a) <$> work p
+      App1A -> do
+        (p1, ConsT l2 App2A p2) <- work p
+        (p3, p4) <- work p2
+        return (concatT (ConsT l App1A p1) (ConsT l2 App2A p3), p4)
+      App2A -> Nothing

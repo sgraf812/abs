@@ -9,7 +9,7 @@
 {-# LANGUAGE ImpredicativeTypes #-}
 {-# LANGUAGE MultiWayIf #-}
 
-module ByName (Configuration, Heap, Stack, Frame(..), smallStep, config, defnSmallStep, D(..), denot) where
+module ByNeed (Configuration, Heap, Stack, Frame(..), smallStep, config, defnSmallStep, D(..), denot) where
 
 import Control.Applicative
 import Control.Monad
@@ -31,24 +31,32 @@ orElse = flip fromMaybe
 type Configuration = (Heap, Expr, Stack)
 type Heap = Name :-> Expr
 type Stack = [Frame]
--- data Frame = Apply Name -- defined in Expr
+data Frame
+  = Apply Name
+  | Update Name
+  deriving Eq
 
 instance {-# OVERLAPPING #-} Show Heap where
   showsPrec _ h = showListWith (\(x, e) -> ((x ++ "↦" ++ show e) ++)) $ Map.assocs h
+
+instance Show Frame where
+  show (Apply x) = "$" ++ x
+  show (Update x) = "#" ++ x
 
 smallStep :: Expr -> [Configuration]
 smallStep e = go (Map.empty, e, [])
   where
     go :: Configuration -> [Configuration]
-    go c@(h, Fix e, s) =
+    go c@(h, fe@(Fix e), s) =
       c : case (e, s) of
-        (Var n, _) | n `Map.member` h -> go (h, h Map.! n, s)
+        (Var n, _) | n `Map.member` h -> go (h, h Map.! n, Update n:s)
         (App e x, _) -> go (h, e, Apply x : s)
         (Lam x e, []) -> []
         (Lam x e, Apply y : s') -> go (h, subst x y e, s')
         (Let x e1 e2, _) ->
           let x' = freshName x h
            in go (Map.insert x' (subst x x' e1) h, (subst x x' e2), s)
+        (_, Update y:s) -> go (Map.insert y fe h, fe, s)
         _ -> [] -- stuck
 
 -- | Reconstruct a Configuration from a trace of the program
@@ -66,10 +74,10 @@ config e p = go (snocifyT p)
               e1' = subst n n' e1
               e2' = subst n n' e2
            in (Map.insert n' e1' h, e2', s)
-        AppA         | App e n <- e -> (h, e, Apply n:s)
+        App1A        | App e n <- e -> (h, e, Apply n:s)
         ValA (Fun _) | Lam _ _ <- e -> c -- No corresponding small-step transition
-        BetaA        | (Apply n':s') <- s, Lam n eb <- e -> (h, subst n n' eb, s')
-        EnterA       | Var n <- e -> (h, h Map.! n, s)
+        App2A        | (Apply n':s') <- s, Lam n eb <- e -> (h, subst n n' eb, s')
+        LookupA _    | Var n <- e -> (h, h Map.! n, s)
         _ -> undefined
 
 defnSmallStep :: Show d => Expr -> (Trace d -> Trace d) -> [Configuration]
