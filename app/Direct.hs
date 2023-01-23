@@ -89,8 +89,7 @@ maxinfD le env = D (maxinf le env)
 
 maxinf :: LExpr -> (Name :-> D) -> Trace D -> Trace D
 maxinf le env p
-  | dst p /= le.at = unD botD p -- stuck. act as bottom! Only happens on the initial call, I guess???
-                                -- In all other cases we go through the step function.
+  | dst p /= le.at = unD botD p
   | otherwise      = unD (go le env) p
   where
     go :: LExpr -> (Name :-> D) -> D
@@ -100,8 +99,8 @@ maxinf le env p
         let p2 = unD (step AppA le.at (go le env)) p
          in concatT p2 $ case val p2 of
               Just (Fun f) -> unD (f (env !⊥ n)) (concatT p p2)
-              Nothing      -> undefined -- actually Bottom! Can't happen in a closed
-                                        -- program without Data types, though
+              Nothing      -> unD botD (concatT p p2) -- Stuck! Can happen in an open program
+                                                      -- Or with data types
       Lam n le' ->
         let val = Fun (\d -> step BetaA (le'.at) (go le' (Map.insert n d env)))
          in D $ \_ -> ConsT le.at (ValA val) (End le.after)

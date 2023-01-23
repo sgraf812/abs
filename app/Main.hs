@@ -28,8 +28,8 @@ import qualified Direct
 import Expr
 import Text.Show (showListWith)
 
-x, y, z :: Expr
-x : y : z : _ = map (Fix . Var . (: [])) "xyz"
+x, y, z, a, b, c, d, e, f, i, t :: Expr
+x : y : z : a : b : c : d : e : f : i : t : _ = map (Fix . Var . (: [])) "xyzabcdefit"
 
 app :: Expr -> Name -> Expr
 app e n = Fix (App e n)
@@ -40,30 +40,43 @@ lam n e = Fix (Lam n e)
 let_ :: Name -> Expr -> Expr -> Expr
 let_ n e1 e2 = Fix (Let n e1 e2)
 
-e1 :: LExpr
-e1 = label $ lam "y" y
+e_1 :: LExpr
+e_1 = label $ lam "y" y
 
-e2 :: LExpr
-e2 = label $ let_ "x" (lam "y" y) (app (app x "x") "x")
+e_2 :: LExpr
+e_2 = label $ let_ "x" (lam "y" y) (app (app x "x") "x")
 
-estuck :: LExpr
-estuck = label x
+e_bool :: LExpr
+e_bool = label $ let_ "t" (lam "a" (lam "b" a)) $
+                 let_ "f" (lam "c" (lam "d" d)) $
+                 app (app (app t "f") "t") "t"
 
-ew :: LExpr
-ew = label $ let_ "y" (lam "x" (app x "x")) (app y "y")
+e_fresh :: LExpr
+e_fresh = label $ let_ "x" (lam "a" (let_ "y" a y)) $
+                  let_ "z" (lam "c" c) $
+                  let_ "d" (app x "x") $
+                  let_ "e" (app x "z") $
+                  app (app d "e") "d"
 
-ew2 :: LExpr
-ew2 = label $ let_ "x" (app x "x") x
+
+e_stuck :: LExpr
+e_stuck = label x
+
+e_w :: LExpr
+e_w = label $ let_ "y" (lam "x" (app x "x")) (app y "y")
+
+e_w2 :: LExpr
+e_w2 = label $ let_ "x" (app x "x") x
 
 -- |
--- >>> e2
+-- >>> e_2
 -- 1(let x = 6(λy. 7(y)8)9 in 2(3(4(x)5@x)@x))5
 --
--- >>> takeT 20 $ Direct.maxinf e2 Map.empty (End (at e2))
+-- >>> takeT 20 $ Direct.maxinf e_2 Map.empty (End (at e_2))
 -- [1]-BindA "x" 6 D->[2]-AppA "x"->[3]-AppA "x"->[4]-EnterA->[6]-ValA Fun->[9]-BetaA "y"->[7]-EnterA->[6]-ValA Fun->[9]-BetaA "y"->[7]-EnterA->[6]-ValA Fun->[9]
 main :: IO ()
-main = forM_ [e1, e2, estuck, ew, ew2] $ \e -> do
--- main = forM_ [e1, e2, estuck] $ \e -> do
+main = forM_ [(10,e_1), (10,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_bool), (50,e_fresh)] $ \(n,e) -> do
+-- main = forM_ [e_1, e2, e_stuck] $ \e -> do
   putStrLn "============================="
   putStrLn ""
   print e
@@ -72,17 +85,17 @@ main = forM_ [e1, e2, estuck, ew, ew2] $ \e -> do
 --  print $ ByName.denot (unlabel e) Map.empty
   putStrLn "-----------------------------"
   putStrLn "maximal and infinite trace (scary maximal trace semantics)"
-  print $ takeT 15 $ Direct.maxinf e Map.empty (End (at e))
+  print $ takeT n $ Direct.maxinf e Map.empty (End (at e))
   putStrLn "-----------------------------"
 --  putStrLn "maximal and infinite trace continuation semantics"
---  print $ takeT 15 $ Cont.unC (Cont.absD (Direct.maxinfD e Map.empty)) (End (at e)) id
+--  print $ takeT n $ Cont.unC (Cont.absD (Direct.maxinfD e Map.empty)) (End (at e)) id
   putStrLn "smallStep (transition system)"
-  mapM_ print $ take 10 $ smallStep (unlabel e)
+  mapM_ print $ take n $ smallStep (unlabel e)
   putStrLn "-----------------------------"
 --  putStrLn "tracesAt 2"
 --  mapM_ print $ tracesAt 2 $ takeT 10 $ Direct.maxinf e Map.empty (End (at e))
   putStrLn "defnSmallStep (derived from maximal trace semantics)"
-  mapM_ print $ take 10 $ defnSmallStep (unlabel e) (Direct.maxinf e Map.empty)
+  mapM_ print $ take n $ defnSmallStep (unlabel e) (Direct.maxinf e Map.empty)
   putStrLn "-----------------------------"
   putStrLn ""
 
