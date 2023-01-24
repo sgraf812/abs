@@ -56,17 +56,18 @@ smallStep e = go (Map.empty, e, [])
         (Let x e1 e2, _) ->
           let x' = freshName x h
            in go (Map.insert x' (subst x x' e1) h, (subst x x' e2), s)
-        (_, Update y:s) -> go (Map.insert y fe h, fe, s)
+        (Lam{}, Update y:s) -> go (Map.insert y fe h, fe, s)
         _ -> [] -- stuck
 
 -- | Reconstruct a Configuration from a trace of the program
 config :: Expr -> Trace d -> Configuration
-config e p = go (snocifyT p)
+config e p = go2 (snocifyT p)
   where
+    go2 :: Trace d -> Configuration -> [Configuration]
     go :: Trace d -> Configuration
     go ConsT {} = undefined
     go (End l) = (Map.empty, e, [])
-    go (SnocT t a l) =
+    go ot@(SnocT t a l) =
       let c@(h,Fix e,s) = go t in
       case a of
         BindA        | Let n e1 e2 <- e ->
@@ -77,7 +78,7 @@ config e p = go (snocifyT p)
         App1A        | App e n <- e -> (h, e, Apply n:s)
         ValA (Fun _) | Lam _ _ <- e -> c -- No corresponding small-step transition
         App2A        | (Apply n':s') <- s, Lam n eb <- e -> (h, subst n n' eb, s')
-        LookupA _    | Var n <- e -> (h, h Map.! n, s)
+        LookupA _    | Var n <- e -> (h, h Map.! n, Update n:s)
         _ -> undefined
 
 defnSmallStep :: Show d => Expr -> (Trace d -> Trace d) -> [Configuration]
