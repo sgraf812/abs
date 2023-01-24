@@ -41,7 +41,37 @@ data Labelled f = Lab
 
 type Expr = Fix ExprF
 
+instance Show Expr where
+  show e = case unFix e of
+    App e n -> show e ++ "@" ++ n
+    Lam n e -> "(" ++ "λ" ++ n ++ "." ++ show e ++ ")"
+    Var n -> n
+    Let n e1 e2 -> "let " ++ n ++ " = " ++ show e1 ++ " in " ++ show e2
+
+instance Eq Expr where
+  e1 == e2 = go Map.empty Map.empty e1 e2
+    where
+      occ benv x = maybe (Left x) Right (Map.lookup x benv)
+      go benv1 benv2 (Fix e1) (Fix e2) = case (e1,e2) of
+        (Var x, Var y)         -> occ benv1 x == occ benv2 y
+        (App f x, App g y)     -> occ benv1 x == occ benv2 y && go benv1 benv2 f g
+        (Let x e1 e2, Let y e3 e4) -> go benv1' benv2' e1 e3 && go benv1' benv2' e2 e4
+          where
+            benv1' = Map.insert x (Map.size benv1) benv1
+            benv2' = Map.insert y (Map.size benv2) benv2
+        (Lam x e1', Lam y e2') -> go (Map.insert x (Map.size benv1) benv1)
+                                     (Map.insert y (Map.size benv2) benv2)
+                                     e1' e2'
+        _                      -> False
+
 type LExpr = Labelled ExprF
+
+instance Show LExpr where
+  show le = case le.thing of
+    App e n -> show le.at ++ "(" ++ show e ++ "@" ++ n ++ ")"
+    Lam n e -> show le.at ++ "(" ++ "λ" ++ n ++ ". " ++ show e ++ ")" ++ show le.after
+    Var n -> show le.at ++ "(" ++ n ++ ")"
+    Let n e1 e2 -> show le.at ++ "(" ++ "let " ++ n ++ " = " ++ show e1 ++ " in " ++ show e2 ++ ")"
 
 label :: Expr -> LExpr
 label (Fix e) = evalState (lab e) 1
@@ -52,7 +82,7 @@ label (Fix e) = evalState (lab e) 1
     lab e = do
       at <- next
       (le, after) <- case e of
-        Var n -> (,) (Var n) <$> next -- this label will never be used
+        Var n -> pure (Var n, -1) -- this label will never be used
         App (Fix e) n -> do
           le <- lab e
           pure (App le n, after le)
@@ -86,15 +116,31 @@ indexAtLE l e = fromMaybe (error (show l ++ " " ++ show e)) (find e)
 atToAfter :: LExpr -> Label -> Label
 atToAfter e at = (indexAtLE at e).after
 
+data Value d = Fun (d -> d)
+
+instance Show (Value d) where
+  show (Fun _) = "fun"
+
+instance Eq (Value d) where
+  _ == _ = True
+
+instance Ord (Value d) where
+  compare _ _ = EQ
+
 data Action d
   = ValA !(Value d)
   | App1A
   | App2A
   | BindA
   | LookupA !(Trace d)
-  deriving (Eq, Ord, Show)
+  deriving (Eq, Ord)
 
-data Value d = Fun (d -> d)
+instance Show d => Show (Action d) where
+  show (ValA v) = "val(" ++ show v ++ ")"
+  show (LookupA k) = "look([" ++ show (dst k) ++ "]_" ++ show (lenT k) ++ ")"
+  show App1A = "app1"
+  show App2A = "app2"
+  show BindA = "bind"
 
 data Trace d
   = End !Label
@@ -109,36 +155,6 @@ instance Show d => Show (Trace d) where
   show (End l) = "[" ++ show l ++ "]"
   show (ConsT l a t) = "[" ++ show l ++ "]-" ++ show a ++ "->" ++ show t ++ ""
   show (SnocT t a l) = show t ++ "-" ++ show a ++ "->[" ++ show l ++ "]"
-
-instance Show Expr where
-  show e = case unFix e of
-    App e n -> show e ++ "@" ++ n
-    Lam n e -> "(" ++ "λ" ++ n ++ "." ++ show e ++ ")"
-    Var n -> n
-    Let n e1 e2 -> "let " ++ n ++ " = " ++ show e1 ++ " in " ++ show e2
-
-instance Show LExpr where
-  show le = case le.thing of
-    App e n -> show le.at ++ "(" ++ show e ++ "@" ++ n ++ ")"
-    Lam n e -> show le.at ++ "(" ++ "λ" ++ n ++ ". " ++ show e ++ ")" ++ show le.after
-    Var n -> show le.at ++ "(" ++ n ++ ")"
-    Let n e1 e2 -> show le.at ++ "(" ++ "let " ++ n ++ " = " ++ show e1 ++ " in " ++ show e2 ++ ")"
-
-instance Eq Expr where
-  e1 == e2 = go Map.empty Map.empty e1 e2
-    where
-      occ benv x = maybe (Left x) Right (Map.lookup x benv)
-      go benv1 benv2 (Fix e1) (Fix e2) = case (e1,e2) of
-        (Var x, Var y)         -> occ benv1 x == occ benv2 y
-        (App f x, App g y)     -> occ benv1 x == occ benv2 y && go benv1 benv2 f g
-        (Let x e1 e2, Let y e3 e4) -> go benv1' benv2' e1 e3 && go benv1' benv2' e2 e4
-          where
-            benv1' = Map.insert x (Map.size benv1) benv1
-            benv2' = Map.insert y (Map.size benv2) benv2
-        (Lam x e1', Lam y e2') -> go (Map.insert x (Map.size benv1) benv1)
-                                     (Map.insert y (Map.size benv2) benv2)
-                                     e1' e2'
-        _                      -> False
 
 src, dst :: Trace d -> Label
 src (End l) = l
@@ -208,15 +224,6 @@ lenT (End _) = 0
 lenT (ConsT _ _ t) = 1 + lenT t
 lenT (SnocT t _ _) = 1 + lenT t
 
-instance Eq (Value d) where
-  _ == _ = True
-
-instance Ord (Value d) where
-  compare _ _ = EQ
-
-instance Show (Value d) where
-  show (Fun _) = "Fun"
-
 valT :: Trace d -> Maybe (Trace d)
 valT t = go (snocifyT t)
   where
@@ -276,16 +283,26 @@ freshName n h = go n
       | n `Map.member` h = go (n ++ "'")
       | otherwise = n
 
-splitBalancedExecution :: Show d => Trace d -> Maybe (Trace d, Trace d)
-splitBalancedExecution p = work (consifyT p)
+splitBalancedPrefix :: Show d => Trace d -> (Trace d, Maybe (Trace d))
+splitBalancedPrefix p = -- traceIt (\(r,_)->"split" ++ "\n"  ++ show (takeT 3 p) ++ "\n" ++ show (takeT 3 r)) $
+  work (consifyT p)
   where
-    work (End _) = Nothing
-    work (ConsT l a p) = case a of
-      ValA _ -> Just (ConsT l a (End (src p)), p)
-      LookupA _ -> first (ConsT l a) <$> work p
-      BindA -> first (ConsT l a) <$> work p
-      App1A -> do
-        (p1, ConsT l2 App2A p2) <- work p
-        (p3, p4) <- work p2
-        return (concatT (ConsT l App1A p1) (ConsT l2 App2A p3), p4)
-      App2A -> Nothing
+    traceIt f res = trace (f res) res
+    work p@(End _) = (p, Nothing) -- Not balanced
+    work p'@(ConsT l a p) = case a of
+      ValA _ -> (ConsT l a (End (src p)), Just p) -- balanced
+      LookupA _ -> let (p',mp') = work p
+                    in (ConsT l a p', mp')
+      BindA     -> let (p',mp') = work p
+                    in (ConsT l a p', mp')
+      App1A ->
+        -- we have to extremely careful not to force mp2 too early
+        let (p1, mp2) = work p
+            pref = ConsT l App1A p1
+            (suff, mp') = case mp2 of
+              Just (ConsT l2 App2A p2) ->
+                let (p3, mp4) = work p2
+                 in (ConsT l2 App2A p3,mp4)
+              Nothing -> (End (dst p1), Nothing)
+         in (pref `concatT` suff,mp')
+      App2A -> (p',Nothing) -- Not balanced; one closing parens too many

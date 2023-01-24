@@ -89,8 +89,8 @@ memo pkey li sem = D $ \pi -> case lookup pkey (consifyT pi) of
     lookup pk (ConsT _ a pi')
       | LookupA pk' <- a
       , pk == pk'
-      , Just (pb, _) <- splitBalancedExecution pi'
-      , trace ("found(" ++ show pk ++ "): " ++ show pb) True
+      , (pb, Just _) <- splitBalancedPrefix pi'
+      ---, trace ("found(" ++ show pk ++ "): " ++ show pb) True
       = valT pb
       | otherwise     = lookup pk pi'
     lookup pk (End l) = Nothing
@@ -123,6 +123,11 @@ maxinf le env p
             env' = Map.insert n d env
          in unD (step BindA le2.at (go le2 env')) p
 
+-- | Derive the pointwise prefix trace semantics from a maximal and inifinite
+-- trace semantics (Section 6.12 of POAI).
+pointwise :: LExpr -> Trace D -> Label -> [Trace D]
+pointwise e p l = map (concatT p) $ tracesAt l $ maxinf e Map.empty p
+
 -- post(go le []) will be the reachability semantics, e.g., small-step!
 -- Wart: Instead of a (set of) Trace `t`, it should take a (set of) Configuration `c`
 -- such that `config p = c` (that is, we don't know how to efficiently compute
@@ -131,10 +136,8 @@ maxinf le env p
 -- The lifting to sets (of initialisation Traces/Configurations) is routine.
 -- we return a list instead of a set, because it might be infinite and we want to
 -- enumerate.
---
--- Note that we never look at the `Expr` returned by the indexing function.
-post :: LExpr -> D -> Trace D -> Label -> [ByNeed.Configuration]
-post le d p l = map (ByNeed.config (unlabel le) . concatT p) (tracesAt l (unD d p))
+post :: LExpr -> Trace D -> Label -> [[ByNeed.Configuration]]
+post e p l = map (ByNeed.config (unlabel e)) (pointwise e p l)
 
 absD :: Label -> D -> ByNeed.D
 absD l (D d) = case val (d (End l)) of

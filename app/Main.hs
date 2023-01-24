@@ -63,10 +63,13 @@ e_stuck :: LExpr
 e_stuck = label x
 
 e_w :: LExpr
-e_w = label $ let_ "y" (lam "x" (app x "x")) (app y "y")
+e_w = label $ let_ "x" x x
 
 e_w2 :: LExpr
 e_w2 = label $ let_ "x" (app x "x") x
+
+e_W :: LExpr
+e_W = label $ let_ "y" (lam "x" (app x "x")) (app y "y")
 
 -- |
 -- >>> e_2
@@ -75,7 +78,7 @@ e_w2 = label $ let_ "x" (app x "x") x
 -- >>> takeT 20 $ Direct.maxinf e_2 Map.empty (End (at e_2))
 -- [1]-BindA "x" 6 D->[2]-App1A "x"->[3]-App1A "x"->[4]-LookupA->[6]-ValA Fun->[9]-App2A "y"->[7]-LookupA->[6]-ValA Fun->[9]-App2A "y"->[7]-LookupA->[6]-ValA Fun->[9]
 main :: IO ()
-main = forM_ [(10,e_1), (10,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_bool), (50,e_fresh)] $ \(n,e) -> do
+main = forM_ [(10,e_1), (10,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_W), (10,e_bool), (50,e_fresh)] $ \(n,e) -> do
 -- main = forM_ [e_1, e2, e_stuck] $ \e -> do
   putStrLn "============================="
   putStrLn ""
@@ -101,5 +104,5 @@ main = forM_ [(10,e_1), (10,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_bool)
   putStrLn "-----------------------------"
   when (ss1 /= ss2) (error "NOT EQUAL")
 
---  putStrLn "splitBalancedExecution"
---  forM_ [20,19..0] $ \m -> print $ fmap fst $ splitBalancedExecution $ dropT m $ takeT n $ Direct.maxinf e Map.empty (End (at e))
+--  putStrLn "splitBalancedPrefix"
+--  forM_ [20,19..0] $ \m -> print $ fmap fst $ splitBalancedPrefix $ dropT m $ takeT n $ Direct.maxinf e Map.empty (End (at e))

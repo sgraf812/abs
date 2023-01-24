@@ -59,37 +59,45 @@ smallStep e = go (Map.empty, e, [])
         (Lam{}, Update y:s) -> go (Map.insert y fe h, fe, s)
         _ -> [] -- stuck
 
--- | Reconstruct a Configuration from a trace of the program
-config :: Expr -> Trace d -> Configuration
-config e p = go2 (snocifyT p)
+-- | Reconstruct a Configuration sequence from a trace of the program
+config :: Show d => Expr -> Trace d -> [Configuration]
+config e p0 = init : go (consifyT p0) init
   where
-    go2 :: Trace d -> Configuration -> [Configuration]
-    go :: Trace d -> Configuration
-    go ConsT {} = undefined
-    go (End l) = (Map.empty, e, [])
-    go ot@(SnocT t a l) =
-      let c@(h,Fix e,s) = go t in
+    init = (Map.empty, e, [])
+    traceIt f res = trace (f res) res
+    go :: Show d => Trace d -> Configuration -> [Configuration]
+    go (End l) _ = []
+    go (ConsT l a p) c0@(h, Fix e, s) = -- trace ("her " ++ unlines [show c0, show a, show p]) $
       case a of
+        ValA _ -> go p c0 -- No corresponding small-step transition
         BindA        | Let n e1 e2 <- e ->
           let n' = freshName n h
               e1' = subst n n' e1
               e2' = subst n n' e2
-           in (Map.insert n' e1' h, e2', s)
-        App1A        | App e n <- e -> (h, e, Apply n:s)
-        ValA (Fun _) | Lam _ _ <- e -> c -- No corresponding small-step transition
-        App2A        | (Apply n':s') <- s, Lam n eb <- e -> (h, subst n n' eb, s')
-        LookupA _    | Var n <- e -> (h, h Map.! n, Update n:s)
-        _ -> undefined
+              c1 = (Map.insert n' e1' h, e2', s)
+           in c1 : go p c1
+        App1A        | App e n <- e ->
+          let c1 = (h, e, Apply n:s)
+              (p1,~(Just (ConsT l App2A p2))) = splitBalancedPrefix p
+              cs2 = c1 : go p1 c1
+              (h',Fix (Lam m eb),Apply n':s') = last cs2
+              c2 = (h', subst m n' eb, s')
+           in -- trace ("app1: " ++ unlines [show c1,show p, show p1, show p2]) $
+              cs2 ++ c2 : go p2 c2
+
+        LookupA _    | Var n <- e ->
+          let c1 = (h, h Map.! n, Update n:s)
+              (!p1,~(Just p2)) = splitBalancedPrefix p
+              cs2 = c1 : go p1 c1
+              (h',e',Update n':s') = last cs2
+              c2 = (Map.insert n' e' h', e', s')
+           in -- trace ("look: " ++ show c1) $
+              cs2 ++ c2 : go p2 c2
+
+        _ -> error (show a ++ " " ++ show (Fix e) ++ " " ++ show (takeT 20 p0) ++ show (takeT 20 p))
 
 defnSmallStep :: Show d => Expr -> (Trace d -> Trace d) -> [Configuration]
-defnSmallStep e sem = map (config e) $ filter (not . lastIsVal) $ (prefs (sem (End (le.at))))
-  where
-    le = label e
-    -- Value transitions have no corresponding small-step transition, hence we exclude them
-    lastIsVal t = case snocifyT t of
-      SnocT _ ValA{} _ -> True
-      _                -> False
-
+defnSmallStep e sem = config e (sem (End ((label e).at)))
 
 data D = V (Value D)
        | Bottom
