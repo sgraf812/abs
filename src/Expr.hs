@@ -265,16 +265,19 @@ subst x y (Fix e) = Fix $ case e of
   App e z -> App (subst x y e) (occ x y z)
   Lam z e
     | z == x -> Lam z e
-    | z == y -> undefined
+    | z == y -> Lam (freshen z) (subst x y $ subst z (freshen z) e)
     | otherwise -> Lam z (subst x y e)
   Let z e1 e2
     | x == z -> Let z e1 e2
-    | z == y -> undefined
+    | z == y -> Let (freshen z) (subst x y $ subst z (freshen z) e1)
+                                (subst x y $ subst z (freshen z) e2)
     | otherwise -> Let z (subst x y e1) (subst x y e2)
   where
     occ x y z
       | x == z = y
       | otherwise = z
+    freshen x = x ++ "'"
+
 
 freshName :: Name -> Name :-> a -> Name
 freshName n h = go n
@@ -291,18 +294,22 @@ splitBalancedPrefix p = -- traceIt (\(r,_)->"split" ++ "\n"  ++ show (takeT 3 p)
     work p@(End _) = (p, Nothing) -- Not balanced
     work p'@(ConsT l a p) = case a of
       ValA _ -> (ConsT l a (End (src p)), Just p) -- balanced
-      LookupA _ -> let (p',mp') = work p
-                    in (ConsT l a p', mp')
-      BindA     -> let (p',mp') = work p
-                    in (ConsT l a p', mp')
+      LookupA _ -> first (ConsT l a) (work p)
+      BindA     -> first (ConsT l a) (work p)
       App1A ->
-        -- we have to extremely careful not to force mp2 too early
+        -- we have to be extremely careful not to force mp2 too early
         let (p1, mp2) = work p
             pref = ConsT l App1A p1
             (suff, mp') = case mp2 of
               Just (ConsT l2 App2A p2) ->
                 let (p3, mp4) = work p2
                  in (ConsT l2 App2A p3,mp4)
-              Nothing -> (End (dst p1), Nothing)
+              _ -> (End (dst p1), Nothing)
          in (pref `concatT` suff,mp')
       App2A -> (p',Nothing) -- Not balanced; one closing parens too many
+
+-- | Loop indefinitely for infinite traces!
+isBalanced :: Show d => Trace d -> Bool
+isBalanced p = case splitBalancedPrefix p of
+  (p', Just (End l)) | l == dst p -> p' == p
+  _                               -> False

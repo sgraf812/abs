@@ -21,20 +21,49 @@ maintainer:         sgraf1337@gmail.com
 -- category:
 extra-source-files: CHANGELOG.md
 
-executable abs
-    main-is:          Main.hs
-
-    -- Modules included in this executable, other than Main.
-    other-modules:    Expr
-                      Direct
-                      Cont
-                      ByNeed
-
-    -- LANGUAGE extensions used by modules in this package.
-    -- other-extensions:
+library
+    hs-source-dirs:
+        src
     build-depends:    base
                     , containers
                     , transformers
---                    , monadic-bang
-    hs-source-dirs:   app
+                    , hedgehog
+    exposed-modules:
+        ByNeed
+        Cont
+        Direct
+        Expr
+        Main
+        Gen
+        TestMain
     default-language: Haskell2010
+
+test-suite abs-test
+    -- Import common warning flags.
+    --import:           warnings
+
+    -- Base language which the package is written in.
+    default-language: Haskell2010
+
+    -- Modules included in this executable, other than Main.
+    other-modules:    Gen
+
+    -- LANGUAGE extensions used by modules in this package.
+    -- other-extensions:
+
+    -- The interface type and version of the test suite.
+    type:             exitcode-stdio-1.0
+
+    -- Directories containing source files.
+    hs-source-dirs:   test
+
+    -- The entrypoint to the test suite.
+    main-is:          Main.hs
+
+    -- Test dependencies.
+    build-depends:    abs
+                    , base
+                    , containers
+                    , transformers
+                    , QuickCheck
+                    , hedgehog

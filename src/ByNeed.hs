@@ -60,6 +60,7 @@ smallStep e = go (Map.empty, e, [])
         _ -> [] -- stuck
 
 -- | Reconstruct a Configuration sequence from a trace of the program
+-- The abstraction function to machine configurations.
 config :: Show d => Expr -> Trace d -> [Configuration]
 config e p0 = init : go (consifyT p0) init
   where
@@ -87,7 +88,7 @@ config e p0 = init : go (consifyT p0) init
 
         LookupA _    | Var n <- e ->
           let c1 = (h, h Map.! n, Update n:s)
-              (!p1,~(Just p2)) = splitBalancedPrefix p
+              (p1,~(Just p2)) = splitBalancedPrefix p
               cs2 = c1 : go p1 c1
               (h',e',Update n':s') = last cs2
               c2 = (Map.insert n' e' h', e', s')

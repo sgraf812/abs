@@ -15,7 +15,6 @@ import ByNeed
 import qualified Cont
 import Control.Applicative
 import Control.Monad
-import Control.Monad.Trans.State
 import Data.Foldable
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -73,10 +72,10 @@ e_W = label $ let_ "y" (lam "x" (app x "x")) (app y "y")
 
 -- |
 -- >>> e_2
--- 1(let x = 6(λy. 7(y)8)9 in 2(3(4(x)5@x)@x))5
+-- 1(let x = 2(λy. 3(y))4 in 5(6(7(x)@x)@x))
 --
--- >>> takeT 20 $ Direct.maxinf e_2 Map.empty (End (at e_2))
--- [1]-BindA "x" 6 D->[2]-App1A "x"->[3]-App1A "x"->[4]-LookupA->[6]-ValA Fun->[9]-App2A "y"->[7]-LookupA->[6]-ValA Fun->[9]-App2A "y"->[7]-LookupA->[6]-ValA Fun->[9]
+-- >>> takeT 10 $ Direct.maxinf e_2 Map.empty (End (at e_2))
+-- [1]-bind->[5]-app1->[6]-app1->[7]-look([1]_0)->[2]-val(fun)->[4]-app2->[3]-look([1]_0)->[2]-val(fun)->[4]-app2->[3]-look([1]_0)->[2]
 main :: IO ()
 main = forM_ [(10,e_1), (10,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_W), (10,e_bool), (50,e_fresh)] $ \(n,e) -> do
 -- main = forM_ [e_1, e2, e_stuck] $ \e -> do
