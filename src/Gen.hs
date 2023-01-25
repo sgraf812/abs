@@ -9,6 +9,7 @@ import           Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Char
 import Text.Show
+import Control.Monad.Trans.State
 
 import Expr
 import GHC.Stack
@@ -38,13 +39,32 @@ closedExpr :: Gen Expr
 closedExpr = openExpr emptyEnv
 
 openExpr :: Env -> Gen Expr
-openExpr env = Gen.sized $ \size ->
+openExpr env = uniqify <$> openExprShadow env
+  where
+    uniqify e = evalState (go Map.empty e) emptyEnv
+    go benv (FLet n e1 e2) = do
+      n' <- fresh
+      let benv' = Map.insert n n' benv
+      FLet n' <$> go benv' e1 <*> go benv' e2
+    go benv (FLam n e) = do
+      n' <- fresh
+      let benv' = Map.insert n n' benv
+      FLam n' <$> go benv' e
+    go benv (FVar n) =
+      pure (FVar (Map.findWithDefault n n benv))
+    go benv (FApp e n) =
+      FApp <$> go benv e <*> pure (Map.findWithDefault n n benv)
+    fresh = state $ \env -> (idx2Name $ nextFree env, env{nextFree = nextFree env + 1})
+
+-- | May cause shadowing. Will be cleaned up in openExpr
+openExprShadow :: Env -> Gen Expr
+openExprShadow env = Gen.sized $ \size ->
   Gen.frequency $ concat
     -- [ [ (1, freeName env)  ] -- let's not worry about "constants"
-    [ [ ((unSize size `div` 8) + 2, boundName env) | not $ null $ boundVars env ]
-    , [ ((unSize size `div` 4) + 1, let_ env) ]
-    , [ ((unSize size `div` 4) + 1, lam env)      ]
-    , [ ((unSize size `div` 4) + 1, app env)  | not $ null $ boundVars env ]
+    [ [ ((unSize size `div` 10) + 2, boundName env) | not $ null $ boundVars env ]
+    , [ ((unSize size `div` 3) + 1, let_ env) ]
+    , [ ((unSize size `div` 3) + 1, lam env)      ]
+    , [ ((unSize size `div` 3) + 1, app env)  | not $ null $ boundVars env ]
     ]
 
 -- | This defn leads to good correlation between Gen size and expr sizes
@@ -58,16 +78,16 @@ freeName, boundName, app, lam, let_ :: Env -> Gen Expr
 freeName  env = Gen.element (map (Fix . Var . (:[])) ['A'..'Z']) -- upper case is never a bound var, but a constant
 boundName env = Gen.element (map (Fix . Var) (boundVars env))
 app       env = fmap Fix $
-  App <$> Gen.scale (max 0 . subtract 1) (openExpr env)
+  App <$> Gen.scale (max 0 . subtract 1) (openExprShadow env)
       <*> Gen.element (boundVars env)
 lam       env = fmap Fix $ withBoundName env $ \v env' ->
-  Lam v <$> Gen.scale (max 0 . subtract 1) (openExpr env')
+  Lam v <$> Gen.scale (max 0 . subtract 1) (openExprShadow env')
 let_      env = fmap Fix $ withBoundName env $ \v env' ->
-  Let v <$> Gen.small (openExpr env')
-        <*> Gen.small (openExpr env')
+  Let v <$> Gen.small (openExprShadow env')
+        <*> Gen.small (openExprShadow env')
 
 withBoundName :: Env -> (Name -> Env -> Gen a) -> Gen a
-withBoundName env f = Gen.choice $ fresh : [ shadowing | not $ null $ boundVars env ]
+withBoundName env f = fresh -- dont want shadowing : [ shadowing | not $ null $ boundVars env ]
   where
     fresh = do
       let tv   = idx2Name (nextFree env)

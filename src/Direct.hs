@@ -9,7 +9,7 @@
 {-# LANGUAGE ImpredicativeTypes #-}
 {-# LANGUAGE MultiWayIf #-}
 
-module Direct (D(..), maxinf, maxinfD) where
+module Direct (D(..), maxinf, D3(..), maxinf3, maxinfD) where
 
 import Control.Applicative
 import Control.Monad
@@ -26,6 +26,8 @@ import Text.Show (showListWith)
 
 import Expr
 import qualified ByNeed
+import Data.Void
+import Data.Bifunctor
 
 orElse = flip fromMaybe
 
@@ -123,6 +125,103 @@ maxinf le env p
             env' = Map.insert n d env
          in unD (step BindA le2.at (go le2 env')) p
 
+newtype D2 = D2 { unD2 :: (Lifted (Value D2), Trace Void -> Trace Void) }
+
+botD2 :: D2
+botD2 = D2 (Bottom, End . dst)
+
+step2 :: Action Void -> Label -> (Trace Void -> Trace Void) -> Trace Void -> Trace Void
+step2 a l sem p = ConsT (dst p) a $ sem $ SnocT p a l
+
+--memo2 :: Trace Void -> Label -> (Trace Void -> Trace Void) -> Trace Void -> Trace Void
+--memo2 pkey li sem = D $ \pi -> case lookup pkey (consifyT pi) of
+--  Just pv -> ConsT (dst pi) (LookupA pkey) pv
+--  Nothing -> unD (step (LookupA pkey) li sem) pi
+--  where
+--    lookup pk (ConsT _ a pi')
+--      | LookupA pk' <- a
+--      , pk == pk'
+--      , (pb, Just _) <- splitBalancedPrefix pi'
+--      ---, trace ("found(" ++ show pk ++ "): " ++ show pb) True
+--      = valT pb
+--      | otherwise     = lookup pk pi'
+--    lookup pk (End l) = Nothing
+
+maxinf2 :: LExpr -> (Name :-> D2) -> Trace Void -> Trace Void
+maxinf2 le env p
+  | dst p /= le.at = snd (unD2 botD2) p
+  | otherwise      = snd (unD2 (go le env)) p
+  where
+    go :: LExpr -> (Name :-> D2) -> D2
+    go le !env = case le.thing of
+      Var n -> Map.findWithDefault botD2 n env
+      App le n ->
+        let D2 (v1, t1) = go le env
+            D2 (v2, t2) = case v1 of
+              Lifted (Fun f) -> f (Map.findWithDefault botD2 n env)
+              _              -> botD2
+            t p = let p2 = step2 App1A le.at t1 p
+                   in concatT p2 (t2 (concatT p p2))
+         in D2 (v2, t)
+      Lam n le ->
+        let
+            f d = let D2 (v, t) = go le (Map.insert n d env) in D2 (v,step2 App2A (le.at) t)
+            val = Lifted (Fun f)
+         in D2 (val, End . dst)
+      Let n le1 le2 ->
+        let D2 (v1,t1) = go le1 env'
+            D2 (v2,t2) = go le2 env'
+            d = D2 (v1, step2 (LookupA (End 0)) le1.at t1)
+            --d = D2 (v1, memo2 p le1.at (go le1 env') -- WHAT IS p??? Call-by-value/need IMPOSSIBLE!
+            env' = Map.insert n d env
+         in D2 (v2, step2 BindA le2.at t2)
+
+newtype D3 = D3 { unD3 :: Trace Void -> (Lifted (Value D3), Trace Void) }
+
+botD3 :: D3
+botD3 = D3 (\p -> (Bottom, End (dst p)))
+
+step3 :: Action Void -> Label -> D3 -> D3
+step3 a l sem = D3 $ \p -> second (ConsT (dst p) a) $ unD3 sem $ SnocT p a l
+
+memo3 :: Trace Void -> Label -> D3 -> D3
+memo3 pkey li sem = D3 $ \pi ->
+  let (v,po) = unD3 (step3 (LookupA pkey) li sem) pi
+  in case lookup pkey (consifyT pi) of
+  Just p  -> (v, ConsT (dst pi) (LookupA pkey) p)
+  Nothing -> (v,po)
+  where
+    lookup pk (ConsT _ a pi')
+      | LookupA pk' <- a
+      , pk == pk'
+      , (pb, Just _) <- splitBalancedPrefix pi'
+      ---, trace ("found(" ++ show pk ++ "): " ++ show pb) True
+      = Just (End (dst pb))
+      | otherwise     = lookup pk pi'
+    lookup pk (End l) = Nothing
+
+maxinf3 :: LExpr -> (Name :-> D3) -> D3
+maxinf3 le env = D3 $ \p ->
+  if dst p /= le.at then unD3 botD3 p
+                    else unD3 (go le env) p
+  where
+    go :: LExpr -> (Name :-> D3) -> D3
+    go le !env = case le.thing of
+      Var n -> Map.findWithDefault botD3 n env
+      App le n -> D3 $ \p ->
+        let (v,p2) = unD3 (step3 App1A le.at (go le env)) p
+         in second (concatT p2) $ case v of
+              Lifted (Fun f) -> unD3 (f (Map.findWithDefault botD3 n env)) (concatT p p2)
+              _              -> unD3 botD3 (concatT p p2)
+      Lam n le ->
+        let f d = step3 App2A (le.at) (go le (Map.insert n d env))
+            val = Lifted (Fun f)
+         in D3 $ \p -> (Lifted (Fun f), End (dst p))
+      Let n le1 le2 -> D3 $ \p ->
+        let d = memo3 p le1.at (go le1 env')
+            env' = Map.insert n d env
+         in unD3 (step3 BindA le2.at (go le2 env')) p
+
 -- | Derive the pointwise prefix trace semantics from a maximal and inifinite
 -- trace semantics (Section 6.12 of POAI).
 pointwise :: LExpr -> Trace D -> Label -> [Trace D]
@@ -141,12 +240,12 @@ post e p l = map (ByNeed.config (unlabel e)) (pointwise e p l)
 
 absD :: Label -> D -> ByNeed.D
 absD l (D d) = case val (d (End l)) of
-  Just (Fun f) -> ByNeed.V (Fun (absD l . f . concD l))
-  Nothing      -> ByNeed.Bottom
+  Just (Fun f) -> ByNeed.DFun (absD l . f . concD l)
+  Nothing      -> ByNeed.DBot
 
 concD :: Label -> ByNeed.D -> D
-concD l ByNeed.Bottom      = botD
-concD l (ByNeed.V (Fun f)) = undefined -- ⊔{ d | absD l d = V (Fun f) }
+concD l ByNeed.DBot     = botD
+concD l (ByNeed.DFun f) = undefined -- ⊔{ d | absD l d = V (Fun f) }
  -- Huh, concD is nto well-defined, because those ds might not form a chain.
  -- Ah, but that is just a result of the domain no longer being singleton traces {{π}}.
  -- In the proper powerset lattice we should be fine.

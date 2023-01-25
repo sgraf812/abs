@@ -1,3 +1,4 @@
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
@@ -20,6 +21,10 @@ import qualified Data.Set as Set
 import Text.Show (showListWith)
 import Debug.Trace
 import Data.Bifunctor (first)
+import qualified Text.ParserCombinators.ReadPrec as Read
+import qualified Text.ParserCombinators.ReadP as ReadP
+import qualified Text.Read as Read
+import Data.Char
 
 type Name = String
 
@@ -31,6 +36,11 @@ data ExprF expr
 
 newtype Fix f = Fix {unFix :: f (Fix f)}
 
+pattern FVar n = Fix (Var n)
+pattern FApp e x = Fix (App e x)
+pattern FLam x e = Fix (Lam x e)
+pattern FLet x e1 e2 = Fix (Let x e1 e2)
+
 type Label = Int
 
 data Labelled f = Lab
@@ -40,13 +50,6 @@ data Labelled f = Lab
   }
 
 type Expr = Fix ExprF
-
-instance Show Expr where
-  show e = case unFix e of
-    App e n -> show e ++ "@" ++ n
-    Lam n e -> "(" ++ "λ" ++ n ++ "." ++ show e ++ ")"
-    Var n -> n
-    Let n e1 e2 -> "let " ++ n ++ " = " ++ show e1 ++ " in " ++ show e2
 
 instance Eq Expr where
   e1 == e2 = go Map.empty Map.empty e1 e2
@@ -64,11 +67,86 @@ instance Eq Expr where
                                      e1' e2'
         _                      -> False
 
+appPrec, lamPrec :: Read.Prec
+lamPrec = Read.minPrec
+appPrec = lamPrec+1
+
+-- | Example output: @F (λa. G) (H I) (λb. J b)@
+instance Show Expr where
+  showsPrec _ (FVar v)      = showString v
+  showsPrec p (FApp f arg)  = showParen (p > appPrec) $
+    showsPrec appPrec f . showString " " . showString arg
+  showsPrec p (FLam b body) = showParen (p > lamPrec) $
+    showString "λ" . showString b . showString "." . showsPrec lamPrec body
+  showsPrec p (FLet x e1 e2) = showParen (p > lamPrec) $
+    showString "let " . showString x
+    . showString " = " . showsPrec lamPrec e1
+    . showString " in " . showsPrec lamPrec e2
+
+-- | The default 'ReadP.many1' function leads to ambiguity. What a terrible API.
+greedyMany, greedyMany1 :: ReadP.ReadP a -> ReadP.ReadP [a]
+greedyMany p  = greedyMany1 p ReadP.<++ pure []
+greedyMany1 p = (:) <$> p <*> greedyMany p
+
+-- | This monster parses Exprs in the REPL etc. It parses names that start
+-- with an upper-case letter as literals and lower-case names as variables.
+--
+-- Accepts syntax like
+-- @let x = λa. g z in (λb. j b) x@
+--
+-- >>> read "g z" :: Expr
+-- g z
+--
+-- >>> read "λx.x" :: Expr
+-- λx. x
+--
+-- >>> read "let x = x in x" :: Expr
+-- let x = x in x
+--
+-- >>> read "let x = λa. g z in (λb. j b) x" :: Expr
+-- let x = λa. g z in (λb. j b) x
+--
+-- >>> read "let x = λa. let y = y in a in g z" :: Expr
+-- let x = λa. let y = y in a in g z
+instance Read Expr where
+  readPrec = Read.parens $ Read.choice
+    [ FVar <$> readName
+    , Read.prec appPrec $ do
+        -- Urgh. Just ignore the code here as long as it works
+        let spaces1 = greedyMany1 (ReadP.satisfy isSpace)
+        (f:args) <- Read.readP_to_Prec $ \prec ->
+          ReadP.sepBy1 (Read.readPrec_to_P Read.readPrec (prec+1)) spaces1
+        guard $ not $ null args
+        let to_var e = case e of FVar n -> Just n; _ -> Nothing
+        Just xs <- pure $ traverse to_var args
+        pure (foldl' FApp f xs)
+    , Read.prec lamPrec $ do
+        c <- Read.get
+        guard (c `elem` "λΛ@#%\\") -- multiple short-hands for Lam
+        FVar v <- Read.readPrec
+        '.' <- Read.get
+        FLam v <$> Read.readPrec
+    , Read.prec lamPrec $ do
+        Read.Ident "let" <- Read.lexP
+        x <- readName
+        Read.Punc "=" <- Read.lexP
+        e1 <- Read.readPrec
+        Read.Ident "in" <- Read.lexP
+        e2 <- Read.readPrec
+        pure (FLet x e1 e2)
+    ]
+    where
+      readName = do
+        Read.Ident v <- Read.lexP
+        guard (not $ v `elem` ["let","in"])
+        guard (all isAlphaNum v)
+        pure v
+
 type LExpr = Labelled ExprF
 
 instance Show LExpr where
   show le = case le.thing of
-    App e n -> show le.at ++ "(" ++ show e ++ "@" ++ n ++ ")"
+    App e n -> show le.at ++ "(" ++ show e ++ " " ++ n ++ ")"
     Lam n e -> show le.at ++ "(" ++ "λ" ++ n ++ ". " ++ show e ++ ")" ++ show le.after
     Var n -> show le.at ++ "(" ++ n ++ ")"
     Let n e1 e2 -> show le.at ++ "(" ++ "let " ++ n ++ " = " ++ show e1 ++ " in " ++ show e2 ++ ")"
@@ -261,6 +339,7 @@ prefs t = go (consifyT t)
 
 subst :: Name -> Name -> Expr -> Expr
 subst x y (Fix e) = Fix $ case e of
+  _ | x == y -> e
   Var z -> Var (occ x y z)
   App e z -> App (subst x y e) (occ x y z)
   Lam z e
@@ -313,3 +392,28 @@ isBalanced :: Show d => Trace d -> Bool
 isBalanced p = case splitBalancedPrefix p of
   (p', Just (End l)) | l == dst p -> p' == p
   _                               -> False
+
+data Lifted a = Lifted !a
+              | Bottom
+              deriving (Eq, Ord, Show)
+
+uniqify e = evalState (go Map.empty e) 0
+  where
+    go benv (FLet n e1 e2) = do
+      n' <- fresh
+      let benv' = Map.insert n n' benv
+      FLet n' <$> go benv' e1 <*> go benv' e2
+    go benv (FLam n e) = do
+      n' <- fresh
+      let benv' = Map.insert n n' benv
+      FLam n' <$> go benv' e
+    go benv (FVar n) =
+      pure (FVar (Map.findWithDefault n n benv))
+    go benv (FApp e n) =
+      FApp <$> go benv e <*> pure (Map.findWithDefault n n benv)
+    fresh = state $ \k -> (idx2Name k, k+1)
+
+    idx2Name :: Int -> Name
+    idx2Name n | n <= 26   = [chr (ord 'a' + n)]
+               | otherwise = "t" ++ show n
+

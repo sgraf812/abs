@@ -72,7 +72,7 @@ e_W = label $ let_ "y" (lam "x" (app x "x")) (app y "y")
 
 -- |
 -- >>> e_2
--- 1(let x = 2(λy. 3(y))4 in 5(6(7(x)@x)@x))
+-- 1(let x = 2(λy. 3(y))4 in 5(6(7(x) x) x))
 --
 -- >>> takeT 10 $ Direct.maxinf e_2 Map.empty (End (at e_2))
 -- [1]-bind->[5]-app1->[6]-app1->[7]-look([1]_0)->[2]-val(fun)->[4]-app2->[3]-look([1]_0)->[2]-val(fun)->[4]-app2->[3]-look([1]_0)->[2]
@@ -97,8 +97,11 @@ main = forM_ [(10,e_1), (10,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_W), (
   putStrLn "-----------------------------"
 --  putStrLn "tracesAt 2"
 --  mapM_ print $ tracesAt 2 $ takeT 10 $ Direct.maxinf e Map.empty (End (at e))
-  putStrLn "defnSmallStep (derived from maximal trace semantics)"
+  putStrLn "defnSmallStep (derived from maximal trace)"
   let ss2 = take n $ defnSmallStep (unlabel e) (Direct.maxinf e Map.empty)
+  mapM_ print ss2
+  putStrLn "absSmallStep (derived from maximal trace semantics)"
+  let ss2 = take n $ absSmallStepEntry e
   mapM_ print ss2
   putStrLn "-----------------------------"
   when (ss1 /= ss2) (error "NOT EQUAL")
