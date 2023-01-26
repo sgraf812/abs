@@ -116,59 +116,108 @@ pattern SVFun f = SV (Lifted (Fun f))
 pattern SVBot :: SSValue
 pattern SVBot = SV Bottom
 
-type SS = (SSValue, Configuration -> [Configuration])
+type SS = (SSValue, Configuration -> SmallTrace)
 
 botSS :: SS
-botSS = (SV Bottom, const [])
+botSS = (SV Bottom, EndS)
 
 absSmallStepEntry :: LExpr -> [Configuration]
-absSmallStepEntry le = init : snd (absSmallStep (unlabel le) Map.empty) init
+absSmallStepEntry le = extractConfigurations $ snd (absSmallStep (unlabel le) Map.empty) init
   where
     init = (Map.empty, unlabel le, [])
+
+data Transition = LookupT | UpdateT | App1T | App2T | LetT deriving (Show, Eq, Ord)
+
+okTransition :: Transition -> Configuration -> Maybe Configuration
+okTransition LookupT (h,FVar x,s) | Just e <- Map.lookup x h = Just (h, e, Update x : s)
+okTransition UpdateT (h,v@FLam{},Update x : s) = Just (Map.insert x v h, v, s)
+okTransition App1T   (h,FApp e x,s) = Just (h, e, Apply x : s)
+okTransition App2T   (h,FLam x e,Apply y : s) = Just (h, subst x y e, s)
+okTransition LetT    (h,FLet x e1 e2,s) = Just (Map.insert x' e1' h, e2', s)
+  where
+    x' = freshName x h
+    e1' = subst x x' e1
+    e2' = subst x x' e2
+okTransition t c | trace (show t ++ " " ++ show c) True = undefined
+okTransition _ _ = Nothing
+
+data SmallTrace
+  = EndS !Configuration
+  | ConsS !Configuration !Transition SmallTrace
+  | SnocS SmallTrace !Transition !Configuration
+
+extractConfigurations :: SmallTrace -> [Configuration]
+extractConfigurations s = go (consifyS s)
+  where
+    go (EndS c) = [c]
+    go (ConsS c t s) = assert (isJust (okTransition t c)) $
+                       c : go s
+
+srcS, dstS :: SmallTrace -> Configuration
+srcS (EndS c) = c
+srcS (ConsS c _ _) = c
+srcS (SnocS s _ _) = srcS s
+dstS (EndS c) = c
+dstS (SnocS _ _ c) = c
+dstS (ConsS _ _ s) = dstS s
+
+consifyS :: SmallTrace -> SmallTrace
+consifyS s = go EndS s
+  where
+    go f (EndS c) = f c
+    go f (ConsS c t s) = ConsS c t (go f s)
+    go f (SnocS s t c) = go (\c' -> ConsS c' t (f c)) s
+
+snocifyS :: SmallTrace -> SmallTrace
+snocifyS s = go EndS s
+  where
+    go f (EndS c) = f c
+    go f (SnocS s t c) = SnocS (go f s) t c
+    go f (ConsS c t s) = go (\c' -> SnocS (f c) t c') s
+
+concatS :: SmallTrace -> SmallTrace -> SmallTrace
+concatS s1 s2 = con s1 s2
+  where
+    con :: SmallTrace -> SmallTrace -> SmallTrace
+    con (EndS c) s2 = assert (c == srcS s2) s2
+    con (SnocS s1 t c) s2 = con s1 (assert (c == srcS s2) (ConsS (dstS s1) t s2))
+    con (ConsS c t s1) s2 = ConsS c t (con s1 s2)
+
+cons :: Transition -> (Configuration -> SmallTrace) -> (Configuration -> SmallTrace)
+cons t f c1 = case okTransition t c1 of
+  Just c2 -> ConsS c1 t (f c2)
+  Nothing -> EndS c1
+
+snoc :: (Configuration -> SmallTrace) -> Transition -> (Configuration -> SmallTrace)
+snoc f t c | let s = f c = s `concatS` case okTransition t (dstS s) of
+  Just c2 -> SnocS (EndS (dstS s)) t c2
+  Nothing -> (EndS (dstS s))
+
+memo :: (Configuration -> SmallTrace) -> (Configuration -> SmallTrace)
+memo f c1 = case okTransition LookupT c1 of
+  Just c2@(h,v@FLam{},Update x:s) -> snoc (ConsS c1 LookupT . EndS) UpdateT c2
+  Just c2                         -> snoc (ConsS c1 LookupT . f)    UpdateT c2
+  Nothing                         -> EndS c1
+
+funnyForwardCompose :: (Configuration -> SmallTrace) -> (Configuration -> SmallTrace) -> (Configuration -> SmallTrace)
+funnyForwardCompose f g c = let s = f c in s `concatS` g (dstS s)
 
 absSmallStep :: Expr -> (Name :-> SS) -> SS
 absSmallStep (Fix e) env = case e of
   Var x   -> Map.findWithDefault botSS x env
-  Lam x e -> (SVFun (\d -> absSmallStep e (Map.insert x d env)), \(_,FLam _ _,_) -> [])
+  Lam x e -> (SVFun (\d -> absSmallStep e (Map.insert x d env)), EndS)
   App e x ->
-    let (v,  trans1) = absSmallStep e env
-        (v', trans2) = case v of
+    let (v1, trans1) = absSmallStep e env
+        (v2, trans2) = case v1 of
           SVFun f -> f (Map.findWithDefault botSS x env)
           _       -> botSS
-        trans (h1,FApp e1 x1, s1) =
-          let c1 = (h1, e1, Apply x1:s1)
-              cs1 = c1 : trans1 c1
-              cs2 = case last cs1 of
-                (h2,FLam x2 e2, Apply y2:s2)
-                  | let !(SVFun _) = v
-                  , let c2 = (h2, subst x2 y2 e2, s2)
-                  -> c2 : trans2 c2
-                _ -> []
-           in cs1 ++ cs2
-     in (v', trans)
+     in (v2, funnyForwardCompose (cons App1T trans1) (cons App2T trans2))
   Let x e1 e2 ->
-    let env' = Map.insert x d env
-        (v1, trans1) = absSmallStep e1 env'
+    let (v1, trans1) = absSmallStep e1 env'
         (v2, trans2) = absSmallStep e2 env'
-        d = (v1,trans_memo trans1)
-        lookup _     (h', v'@FLam{},Update x':s') = [(Map.insert x' v' h', v', s')]
-        lookup trans c                            = trans c
-        trans_memo trans (h',FVar x',s') =
-          let e1' = h' Map.! x'
-              c1 = (h',e1',Update x':s')
-              cs = trans1 c1
-          in c1 : case e1' of
-            FLam{} -> [(Map.insert x' e1' h', e1', s')] -- perhaps test here whether e1 was *not* a value. But it doesn't matter much
-            _      -> cs ++ case last cs of
-              (h', v1', Update x':s') -> [(Map.insert x' v1' h', v1', s')]
-              _                       -> []
-        trans_let (h',FLet x' e1' e2', s') =
-          let x'' = freshName x' h'
-              e1'' = subst x' x'' e1'
-              e2'' = subst x' x'' e2'
-              c' = (Map.insert x'' e1'' h', e2'', s')
-           in c' : trans2 c'
-     in (v2, trans_let)
+        env' = Map.insert x d env
+        d = (v1,memo trans1)
+     in (v2, cons LetT trans2)
 
 newtype D = D (Lifted (Value D))
 

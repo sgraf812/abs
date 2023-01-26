@@ -17,7 +17,7 @@ import           Text.Printf
 import           Control.Concurrent
 import           Control.Concurrent.Async.Lifted (race)
 
-import           Expr
+import           Expr hiding (assert)
 import           ByNeed
 import           Direct
 

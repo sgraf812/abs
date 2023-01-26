@@ -25,6 +25,11 @@ import qualified Text.ParserCombinators.ReadPrec as Read
 import qualified Text.ParserCombinators.ReadP as ReadP
 import qualified Text.Read as Read
 import Data.Char
+import GHC.Stack
+
+assert :: HasCallStack => Bool -> a -> a
+assert True  x = x
+assert False _ = error "assertion failure"
 
 type Name = String
 
@@ -278,7 +283,6 @@ concatT t1 t2 = con t1 t2
     con (End l) t2 = assert (l == src t2) t2
     con (SnocT t1 a l) t2 = con t1 (assert (l == src t2) (ConsT (dst t1) a t2))
     con (ConsT l a t1) t2 = ConsT l a (con t1 t2)
-    assert b e = if b then e else undefined
 
 takeT :: Int -> Trace d -> Trace d
 takeT n t = go n (consifyT t)
@@ -358,6 +362,8 @@ subst x y (Fix e) = Fix $ case e of
     freshen x = x ++ "'"
 
 
+-- REMINDER: This definition becomes insufficient as soon as we introduce black-holing.
+-- Then we'd also need to consider variables bound in Update frames on the stack.
 freshName :: Name -> Name :-> a -> Name
 freshName n h = go n
   where
