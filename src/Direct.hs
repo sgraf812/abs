@@ -215,7 +215,6 @@ maxinf3 le env = D3 $ \p ->
               _              -> unD3 botD3 (concatT p p2)
       Lam n le ->
         let f d = step3 App2A (le.at) (go le (Map.insert n d env))
-            val = Lifted (Fun f)
          in D3 $ \p -> (Lifted (Fun f), End (dst p))
       Let n le1 le2 -> D3 $ \p ->
         let d = memo3 p le1.at (go le1 env')
