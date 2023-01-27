@@ -193,11 +193,9 @@ snoc f t c | let s = f c = s `concatS` case okTransition t (dstS s) of
   Just c2 -> SnocS (EndS (dstS s)) t c2
   Nothing -> (EndS (dstS s))
 
-memo :: (Configuration -> SmallTrace) -> (Configuration -> SmallTrace)
-memo f c1 = case okTransition LookupT c1 of
-  Just c2@(h,v@FLam{},Update x:s) -> snoc (ConsS c1 LookupT . EndS) UpdateT c2
-  Just c2                         -> snoc (ConsS c1 LookupT . f)    UpdateT c2
-  Nothing                         -> EndS c1
+shortcut :: (Configuration -> SmallTrace) -> (Configuration -> SmallTrace)
+shortcut _ c@(_,v@FLam{},Update x:_) = EndS c
+shortcut f c                         = f c
 
 funnyForwardCompose :: (Configuration -> SmallTrace) -> (Configuration -> SmallTrace) -> (Configuration -> SmallTrace)
 funnyForwardCompose f g c = let s = f c in s `concatS` g (dstS s)
@@ -216,8 +214,12 @@ absSmallStep (Fix e) env = case e of
     let (v1, trans1) = absSmallStep e1 env'
         (v2, trans2) = absSmallStep e2 env'
         env' = Map.insert x d env
-        d = (v1,memo trans1)
+        d = (v1,snoc(cons LookupT (shortcut trans1)) UpdateT)
      in (v2, cons LetT trans2)
+
+-- | convenience
+runSS :: Int -> String -> IO ()
+runSS n s = mapM_ print $ take n $ absSmallStepEntry (label (uniqify (read s)))
 
 newtype D = D (Lifted (Value D))
 

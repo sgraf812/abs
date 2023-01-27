@@ -80,13 +80,13 @@ instance Ord D where
 instance Show D where
   show _ = "D"
 
-step :: Action D -> Label -> D -> D
-step a l sem = D $ \p -> ConsT (dst p) a $ unD sem $ SnocT p a l
+cons :: Action D -> Label -> D -> D
+cons a l sem = D $ \p -> ConsT (dst p) a $ unD sem $ SnocT p a l
 
-memo :: Trace D -> Label -> D -> D
-memo pkey li sem = D $ \pi -> case lookup pkey (consifyT pi) of
-  Just pv -> ConsT (dst pi) (LookupA pkey) pv
-  Nothing -> unD (step (LookupA pkey) li sem) pi
+memo :: Trace D -> D -> D
+memo pkey sem = D $ \pi -> case lookup pkey (consifyT pi) of
+  Just pv -> pv
+  Nothing -> unD sem pi
   where
     lookup pk (ConsT _ a pi')
       | LookupA pk' <- a
@@ -112,18 +112,18 @@ maxinf le env p
     go le !env = case le.thing of
       Var n -> env !⊥ n
       App le n -> D $ \p ->
-        let p2 = unD (step App1A le.at (go le env)) p
+        let p2 = unD (cons App1A le.at (go le env)) p
          in concatT p2 $ case val p2 of
               Just (Fun f) -> unD (f (env !⊥ n)) (concatT p p2)
               Nothing      -> unD botD (concatT p p2) -- Stuck! Can happen in an open program
                                                       -- Or with data types
       Lam n le' ->
-        let val = Fun (\d -> step App2A (le'.at) (go le' (Map.insert n d env)))
+        let val = Fun (\d -> cons App2A (le'.at) (go le' (Map.insert n d env)))
          in D $ \_ -> ConsT le.at (ValA val) (End le.after)
       Let n le1 le2 -> D $ \p ->
-        let d = memo p le1.at (go le1 env')
+        let d = cons (LookupA p) le1.at (memo p (go le1 env'))
             env' = Map.insert n d env
-         in unD (step BindA le2.at (go le2 env')) p
+         in unD (cons BindA le2.at (go le2 env')) p
 
 newtype D2 = D2 { unD2 :: (Lifted (Value D2), Trace Void -> Trace Void) }
 

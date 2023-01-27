@@ -403,23 +403,35 @@ data Lifted a = Lifted !a
               | Bottom
               deriving (Eq, Ord, Show)
 
-uniqify e = evalState (go Map.empty e) 0
+varOccs :: Expr -> Set Name
+varOccs e = go Set.empty e
   where
+    go vs (FVar x) = Set.insert x vs
+    go vs (FApp e x) = go (Set.insert x vs) e
+    go vs (FLam x e) = go (Set.insert x vs) e
+    go vs (FLet x e1 e2) = go (go (Set.insert x vs) e1) e2
+
+uniqify :: Expr -> Expr
+uniqify e = evalState (go Map.empty e) Set.empty
+  where
+    taken = varOccs e
     go benv (FLet n e1 e2) = do
-      n' <- fresh
+      n' <- freshen n
       let benv' = Map.insert n n' benv
       FLet n' <$> go benv' e1 <*> go benv' e2
     go benv (FLam n e) = do
-      n' <- fresh
+      n' <- freshen n
       let benv' = Map.insert n n' benv
       FLam n' <$> go benv' e
     go benv (FVar n) =
       pure (FVar (Map.findWithDefault n n benv))
     go benv (FApp e n) =
       FApp <$> go benv e <*> pure (Map.findWithDefault n n benv)
-    fresh = state $ \k -> (idx2Name k, k+1)
-
-    idx2Name :: Int -> Name
-    idx2Name n | n <= 26   = [chr (ord 'a' + n)]
-               | otherwise = "t" ++ show n
+    freshen n = do
+      s <- get
+      let try n | Set.member n s = try (n ++ "'")
+                | otherwise      = n
+      let n' = try n
+      put (Set.insert n' s)
+      pure n'
 
