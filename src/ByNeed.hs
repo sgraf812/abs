@@ -77,15 +77,15 @@ config e p0 = yield (consifyT p0) init
     go (ConsT l a p) c0@(h, Fix e, s) = -- trace ("her " ++ unlines [show c0, show a, show p]) $
       case a of
         ValA _ -> go p c0 -- No corresponding small-step transition
-        BindA        | Let n e1 e2 <- e ->
+        BindA{}      | Let n e1 e2 <- e ->
           let n' = freshName n h
               e1' = subst n n' e1
               e2' = subst n n' e2
               c1 = (Map.insert n' e1' h, e2', s)
            in yield p c1
-        App1A        | App e n <- e ->
+        App1A _      | App e n <- e ->
           let c1 = (h, e, Apply n:s)
-              (p1,~(Just (ConsT l App2A p2))) = splitBalancedPrefix p
+              (p1,~(Just (ConsT l App2A{} p2))) = splitBalancedPrefix p
               cs1 = yield p1 c1
               (h',Fix (Lam m eb),Apply n':s') = last cs1
               c2 = (h', subst m n' eb, s')

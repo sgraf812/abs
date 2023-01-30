@@ -27,7 +27,7 @@ main = void $
   checkParallel $$(discover)
 
 sizeFactor :: Int
-sizeFactor = 1
+sizeFactor = 2
 
 withTimeLimit :: Int -> TestT IO a -> TestT IO a
 withTimeLimit timeout v = do
@@ -61,27 +61,6 @@ prop_maxinf_maximal_trace_stuck_or_balanced =
     e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
     let le = label e
     let p = maxinf le Map.empty (End le.at)
-    let p' = takeT (sizeFactor*100) p
-    let maximal = p' == takeT (sizeFactor*101) p
-    let value = val p'
-    let stuck = isNothing value
-    let balanced = isBalanced p'
-    --test $ withTimeLimit 10000 $ do
-    test $ do
-      assert (not maximal || stuck || balanced)
-      classify "stuck" stuck
-      classify "balanced" balanced
-      classify "potentially infinite" (not maximal)
-    --forM_ [0..20] $ \n ->
-    --  classify (fromString (printf "larger than %3d" (20*n))) (Gen.exprSize e > 20*n)
-    --forM_ [0..20] $ \n ->
-    --  classify (fromString (printf "longer than %3d" (20*n))) (lenT p' > 20*n)
-
-prop_maxinf3_maximal_trace_stuck_or_balanced =
-  property $ do
-    e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
-    let le = label e
-    let p = snd $ unD3 (maxinf3 le Map.empty) (End le.at)
     let p' = takeT (sizeFactor*100) p
     let maximal = p' == takeT (sizeFactor*101) p
     let value = val p'

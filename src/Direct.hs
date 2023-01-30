@@ -9,7 +9,7 @@
 {-# LANGUAGE ImpredicativeTypes #-}
 {-# LANGUAGE MultiWayIf #-}
 
-module Direct (D(..), maxinf, D3(..), maxinf3, maxinfD) where
+module Direct (D(..), maxinf, maxinfD) where
 
 import Control.Applicative
 import Control.Monad
@@ -28,6 +28,7 @@ import Expr
 import qualified ByNeed
 import Data.Void
 import Data.Bifunctor
+import Data.List.NonEmpty (NonEmpty)
 
 orElse = flip fromMaybe
 
@@ -83,8 +84,8 @@ instance Show D where
 cons :: Action D -> Label -> D -> D
 cons a l sem = D $ \p -> ConsT (dst p) a $ unD sem $ SnocT p a l
 
-memo :: Trace D -> D -> D
-memo pkey sem = D $ \pi -> case lookup pkey (consifyT pi) of
+memo :: Addr -> D -> D
+memo a sem = D $ \pi -> case lookup a (consifyT pi) of
   Just pv -> pv
   Nothing -> unD sem pi
   where
@@ -112,114 +113,118 @@ maxinf le env p
     go le !env = case le.thing of
       Var n -> env !⊥ n
       App le n -> D $ \p ->
-        let p2 = unD (cons App1A le.at (go le env)) p
+        let p2 = unD (cons (App1A n) le.at (go le env)) p
          in concatT p2 $ case val p2 of
               Just (Fun f) -> unD (f (env !⊥ n)) (concatT p p2)
               Nothing      -> unD botD (concatT p p2) -- Stuck! Can happen in an open program
                                                       -- Or with data types
       Lam n le' ->
-        let val = Fun (\d -> cons App2A (le'.at) (go le' (Map.insert n d env)))
+        let val = Fun (\d -> cons (App2A n) (le'.at) (go le' (Map.insert n d env)))
          in D $ \_ -> ConsT le.at (ValA val) (End le.after)
       Let n le1 le2 -> D $ \p ->
-        let d = cons (LookupA p) le1.at (memo p (go le1 env'))
+        let a = hash p
+            d = cons (LookupA a) le1.at (memo a (go le1 env'))
             env' = Map.insert n d env
-         in unD (cons BindA le2.at (go le2 env')) p
+         in unD (cons (BindA a n d) le2.at (go le2 env')) p
 
-newtype D2 = D2 { unD2 :: (Lifted (Value D2), Trace Void -> Trace Void) }
+data ElabFrame d = Appl d | Upda !Addr deriving Eq
+type ElabStack d = [ElabFrame d]
 
-botD2 :: D2
-botD2 = D2 (Bottom, End . dst)
-
-step2 :: Action Void -> Label -> (Trace Void -> Trace Void) -> Trace Void -> Trace Void
-step2 a l sem p = ConsT (dst p) a $ sem $ SnocT p a l
-
---memo2 :: Trace Void -> Label -> (Trace Void -> Trace Void) -> Trace Void -> Trace Void
---memo2 pkey li sem = D $ \pi -> case lookup pkey (consifyT pi) of
---  Just pv -> ConsT (dst pi) (LookupA pkey) pv
---  Nothing -> unD (step (LookupA pkey) li sem) pi
+-- | Abstraction function to stateful maximal trace semantics
+--absS :: Trace D -> [(Label, Name :-> D, ElabStack)]
+--absS p = yield (consifyT p) init
 --  where
---    lookup pk (ConsT _ a pi')
---      | LookupA pk' <- a
---      , pk == pk'
---      , (pb, Just _) <- splitBalancedPrefix pi'
---      ---, trace ("found(" ++ show pk ++ "): " ++ show pb) True
---      = valT pb
---      | otherwise     = lookup pk pi'
---    lookup pk (End l) = Nothing
+--    init = (src p, Map.empty, [])
+--    yield p c@(l', env, s) | src p /= l' = []
+--                           | otherwise   = c : go p c
+--    go (End l)       (l', env, s) = []
+--    go (ConsT l a p) (_, env, s) = case a of -- TODO: What if l /= l'?
+--      ValA v -> yield p (src p, env, s) -- no-op
+--      App1A -> yield p (src p, env, Appl d:s)
+--      App2A n | Appl d : s' <- s -> yield p (src p, Map.insert n d env, s')
+--      LookupA addr -> yield p (src p, env, Upda:s)
+--      UpdateA addr | Upda p : s' <- s -> yield p (src p, Map.insert n d env, s')
+--      BindA addr -> _
 
-maxinf2 :: LExpr -> (Name :-> D2) -> Trace Void -> Trace Void
-maxinf2 le env p
-  | dst p /= le.at = snd (unD2 botD2) p
-  | otherwise      = snd (unD2 (go le env)) p
+type Configu = (Label, Name :-> D, ElabStack D)
+type Cache = Addr :-> (Value D, [Configu])
+
+-- | Abstraction function to stateful maximal trace semantics
+absS :: Trace D -> [Configu]
+absS p = map (go . snocifyT) (prefs p)
   where
-    go :: LExpr -> (Name :-> D2) -> D2
-    go le !env = case le.thing of
-      Var n -> Map.findWithDefault botD2 n env
-      App le n ->
-        let D2 (v1, t1) = go le env
-            D2 (v2, t2) = case v1 of
-              Lifted (Fun f) -> f (Map.findWithDefault botD2 n env)
-              _              -> botD2
-            t p = let p2 = step2 App1A le.at t1 p
-                   in concatT p2 (t2 (concatT p p2))
-         in D2 (v2, t)
-      Lam n le ->
-        let
-            f d = let D2 (v, t) = go le (Map.insert n d env) in D2 (v,step2 App2A (le.at) t)
-            val = Lifted (Fun f)
-         in D2 (val, End . dst)
-      Let n le1 le2 ->
-        let D2 (v1,t1) = go le1 env'
-            D2 (v2,t2) = go le2 env'
-            d = D2 (v1, step2 (LookupA (End 0)) le1.at t1)
-            --d = D2 (v1, memo2 p le1.at (go le1 env') -- WHAT IS p??? Call-by-value/need IMPOSSIBLE!
-            env' = Map.insert n d env
-         in D2 (v2, step2 BindA le2.at t2)
+    go :: Trace D -> Configu
+    go (End l) = (l, Map.empty, [])
+    go (SnocT p a l) =
+      let c0@(_, env, s) = go p in
+      case a of -- TODO: What if l /= l'?
+        ValA v -> (l, env, s)
+        App1A n -> (l, env, Appl (Map.findWithDefault botD n env):s)
+        App2A n | Appl d : s' <- s -> (l, Map.insert n d env, s')
+        LookupA addr -> (l, varrho (defn addr p), Upda addr:s)
+        UpdateA addr | Upda _ : s' <- s -> (l, env, s') -- ??? TODO
+        BindA addr n d -> (l, Map.insert n d env, s)
 
-newtype D3 = D3 { unD3 :: Trace Void -> (Lifted (Value D3), Trace Void) }
+    varrho (End l) = Map.empty
+    varrho (SnocT p a _) = case a of
+      BindA addr n d -> Map.insert n d (varrho p)
+      App1A _ -> varrho p
+      App2A n d -> _ varrho p
+      LookupA addr -> varrho (defn addr p)
+      UpdateA addr -> varrho (skipLookup addr p)
 
-botD3 :: D3
-botD3 = D3 (\p -> (Bottom, End (dst p)))
+    defn addr p@(SnocT _ (BindA addr' _ _) _) | addr == addr' = p
+    defn addr (SnocT p _ _) = defn addr p
+    defn addr (End _) = error $ "no defn " ++ show addr
 
-step3 :: Action Void -> Label -> D3 -> D3
-step3 a l sem = D3 $ \p -> second (ConsT (dst p) a) $ unD3 sem $ SnocT p a l
+    skipLookup addr (SnocT p (LookupA addr') _) | addr == addr' = p
+    skipLookup addr (SnocT p _ _) = skipLookup addr p
+    skipLookup addr (End _) = error $ "no defn " ++ show addr
 
-memo3 :: Trace Void -> Label -> D3 -> D3
-memo3 pkey li sem = D3 $ \pi ->
-  let (v,po) = unD3 (step3 (LookupA pkey) li sem) pi
-  in case lookup pkey (consifyT pi) of
-  Just p  -> (v, ConsT (dst pi) (LookupA pkey) p)
-  Nothing -> (v,po)
-  where
-    lookup pk (ConsT _ a pi')
-      | LookupA pk' <- a
-      , pk == pk'
-      , (pb, Just _) <- splitBalancedPrefix pi'
-      ---, trace ("found(" ++ show pk ++ "): " ++ show pb) True
-      = Just (End (dst pb))
-      | otherwise     = lookup pk pi'
-    lookup pk (End l) = Nothing
+    unwindUntil pred p@(SnocT _ a _) | pred a = Just p
+    unwindUntil pred (SnocT p _ _) = unwindUntil pred p
+    unwindUntil pred (End _) = Nothing
 
-maxinf3 :: LExpr -> (Name :-> D3) -> D3
-maxinf3 le env = D3 $ \p ->
-  if dst p /= le.at then unD3 botD3 p
-                    else unD3 (go le env) p
-  where
-    go :: LExpr -> (Name :-> D3) -> D3
-    go le !env = case le.thing of
-      Var n -> Map.findWithDefault botD3 n env
-      App le n -> D3 $ \p ->
-        let (v,p2) = unD3 (step3 App1A le.at (go le env)) p
-         in second (concatT p2) $ case v of
-              Lifted (Fun f) -> unD3 (f (Map.findWithDefault botD3 n env)) (concatT p p2)
-              _              -> unD3 botD3 (concatT p p2)
-      Lam n le ->
-        let f d = step3 App2A (le.at) (go le (Map.insert n d env))
-         in D3 $ \p -> (Lifted (Fun f), End (dst p))
-      Let n le1 le2 -> D3 $ \p ->
-        let d = memo3 p le1.at (go le1 env')
-            env' = Map.insert n d env
-         in unD3 (step3 BindA le2.at (go le2 env')) p
+
+-- | Reconstruct a Configuration sequence from a trace of the program
+-- The abstraction function to machine configurations.
+--config :: Show d => Expr -> Trace d -> [Configuration]
+--config e p0 = yield (consifyT p0) init
+--  where
+--    init = (Map.empty, e, [])
+--    traceIt f res = trace (f res) res
+--    yield t c = c : go t c
+--    go (End l) _ = []
+--    go (ConsT l a p) c0@(h, Fix e, s) = -- trace ("her " ++ unlines [show c0, show a, show p]) $
+--      case a of
+--        ValA _ -> go p c0 -- No corresponding small-step transition
+--        BindA _      | Let n e1 e2 <- e ->
+--          let n' = freshName n h
+--              e1' = subst n n' e1
+--              e2' = subst n n' e2
+--              c1 = (Map.insert n' e1' h, e2', s)
+--           in yield p c1
+--        App1A        | App e n <- e ->
+--          let c1 = (h, e, Apply n:s)
+--              (p1,~(Just (ConsT l App2A p2))) = splitBalancedPrefix p
+--              cs1 = yield p1 c1
+--              (h',Fix (Lam m eb),Apply n':s') = last cs1
+--              c2 = (h', subst m n' eb, s')
+--              cs2 = yield p2 c2
+--           in -- trace ("app1: " ++ unlines [show c1,show p, show p1, show p2]) $
+--              cs1 ++ cs2
+--
+--        LookupA _    | Var n <- e ->
+--          let c1 = (h, h Map.! n, Update n:s)
+--              (p1,~(Just p2)) = splitBalancedPrefix p
+--              cs1 = yield p1 c1
+--              (h',e',Update n':s') = last cs1
+--              c2 = (Map.insert n' e' h', e', s')
+--              cs2 = yield p2 c2
+--           in -- trace ("look: " ++ show c1 ++ show (takeT 4 p1)) $
+--              cs1 ++ cs2
+--
+--        _ -> error (show l ++ " " ++ show a ++ " " ++ show (Fix e) ++ "\n"  ++ show (takeT 20 p0) ++ "\n" ++ show (takeT 20 p))
 
 -- | Derive the pointwise prefix trace semantics from a maximal and inifinite
 -- trace semantics (Section 6.12 of POAI).
