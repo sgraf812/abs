@@ -85,7 +85,7 @@ cons :: Action D -> Label -> D -> D
 cons a l sem = D $ \p -> ConsT (dst p) a $ unD sem $ SnocT p a l
 
 snoc :: D -> Action D -> D
-snoc sem a = D $ \p -> SnocT (unD sem p) a (dst p)
+snoc sem a = D $ \p -> let p' = (unD sem p) in SnocT p' a (dst p')
 
 memo :: Addr -> D -> D
 memo a sem = D $ \pi -> case lookup a (consifyT pi) of
@@ -133,22 +133,6 @@ maxinf le env p
 data ElabFrame d = Appl d | Upda !Addr deriving (Eq, Show)
 type ElabStack d = [ElabFrame d]
 
--- | Abstraction function to stateful maximal trace semantics
---absS :: Trace D -> [(Label, Name :-> D, ElabStack)]
---absS p = yield (consifyT p) init
---  where
---    init = (src p, Map.empty, [])
---    yield p c@(l', env, s) | src p /= l' = []
---                           | otherwise   = c : go p c
---    go (End l)       (l', env, s) = []
---    go (ConsT l a p) (_, env, s) = case a of -- TODO: What if l /= l'?
---      ValA v -> yield p (src p, env, s) -- no-op
---      App1A -> yield p (src p, env, Appl d:s)
---      App2A n | Appl d : s' <- s -> yield p (src p, Map.insert n d env, s')
---      LookupA addr -> yield p (src p, env, Upda:s)
---      UpdateA addr | Upda p : s' <- s -> yield p (src p, Map.insert n d env, s')
---      BindA addr -> _
-
 type Configu = (Cache, Label, Name :-> D, ElabStack D)
 type Cache = Addr :-> (Label, Value D, Label)
 
@@ -170,7 +154,7 @@ absS p = map (go . snocifyT) (prefs (traceShowId p))
           | otherwise -> (cache, l, env, Upda addr:s)
         UpdateA addr
           | let (Upda addr' : s') = s
-          -> (updateCache cache addr' p, l, env, s')
+          -> assert (addr == addr') (updateCache cache addr' p, l, env, s')
         BindA addr n d -> (cache, l, env, s)
 
     varrho (End l) = Map.empty
