@@ -397,7 +397,6 @@ splitBalancedPrefix p = -- traceIt (\(r,_)->"split" ++ "\n"  ++ show (takeT 3 p)
     work p@(End _) = (p, Nothing) -- Not balanced
     work p'@(ConsT l a p) = case a of
       ValA _ -> (ConsT l a (End (src p)), Just p) -- balanced
-      LookupA _ -> first (ConsT l a) (work p)
       BindA{}   -> first (ConsT l a) (work p)
       App1A n ->
         -- we have to be extremely careful not to force mp2 too early
@@ -409,7 +408,18 @@ splitBalancedPrefix p = -- traceIt (\(r,_)->"split" ++ "\n"  ++ show (takeT 3 p)
                  in (ConsT l2 (App2A n d) p3,mp4)
               _ -> (End (dst p1), Nothing)
          in (pref `concatT` suff,mp')
+      LookupA a ->
+        let (p1, mp2) = work p
+            pref = ConsT l (LookupA a) p1
+            (suff, mp') = case mp2 of
+              Just (ConsT l2 (UpdateA a) p2) ->
+                -- NB: In contrast to App1A, we don't need to end with a
+                --     balanced p2
+                (ConsT l2 (UpdateA a) (End (src p2)), Just p2)
+              _ -> (End (dst p1), Nothing)
+         in (pref `concatT` suff,mp')
       App2A _ _ -> (p',Nothing) -- Not balanced; one closing parens too many
+      UpdateA _ -> (p',Nothing) -- Not balanced; one closing parens too many
 
 -- | Loop indefinitely for infinite traces!
 isBalanced :: Show d => Trace d -> Bool

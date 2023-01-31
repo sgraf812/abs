@@ -95,7 +95,7 @@ config e p0 = yield (consifyT p0) init
 
         LookupA _    | Var n <- e ->
           let c1 = (h, h Map.! n, Update n:s)
-              (p1,~(Just p2)) = splitBalancedPrefix p
+              (p1,~(Just (ConsT l UpdateA{} p2))) = splitBalancedPrefix p
               cs1 = yield p1 c1
               (h',e',Update n':s') = last cs1
               c2 = (Map.insert n' e' h', e', s')
