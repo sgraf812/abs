@@ -74,7 +74,7 @@ maxinf le env p
                                               -- program without Data types, though
          in unC (step (App1A n) le.at (go le env)) p (k . apply)
       Lam n le ->
-        let val = Fun (\c -> step (App2A n) (le.at) (go le (Map.insert n c env)))
+        let val = Fun (\c -> step (App2A n c) (le.at) (go le (Map.insert n c env)))
          in C $ \_p k -> k (ConsT le.at (ValA val) (End le.after))
       Let n le1 le2 -> C $ \p ->
         let a = hash p

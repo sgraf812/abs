@@ -9,7 +9,7 @@
 {-# LANGUAGE ImpredicativeTypes #-}
 {-# LANGUAGE MultiWayIf #-}
 
-module Direct (D(..), maxinf, maxinfD) where
+module Direct (D(..), maxinf, maxinfD, absS) where
 
 import Control.Applicative
 import Control.Monad
@@ -84,6 +84,9 @@ instance Show D where
 cons :: Action D -> Label -> D -> D
 cons a l sem = D $ \p -> ConsT (dst p) a $ unD sem $ SnocT p a l
 
+snoc :: D -> Action D -> D
+snoc sem a = D $ \p -> SnocT (unD sem p) a (dst p)
+
 memo :: Addr -> D -> D
 memo a sem = D $ \pi -> case lookup a (consifyT pi) of
   Just pv -> pv
@@ -119,15 +122,15 @@ maxinf le env p
               Nothing      -> unD botD (concatT p p2) -- Stuck! Can happen in an open program
                                                       -- Or with data types
       Lam n le' ->
-        let val = Fun (\d -> cons (App2A n) (le'.at) (go le' (Map.insert n d env)))
+        let val = Fun (\d -> cons (App2A n d) (le'.at) (go le' (Map.insert n d env)))
          in D $ \_ -> ConsT le.at (ValA val) (End le.after)
       Let n le1 le2 -> D $ \p ->
         let a = hash p
-            d = cons (LookupA a) le1.at (memo a (go le1 env'))
+            d = cons (LookupA a) le1.at (snoc (memo a (go le1 env')) (UpdateA a))
             env' = Map.insert n d env
          in unD (cons (BindA a n d) le2.at (go le2 env')) p
 
-data ElabFrame d = Appl d | Upda !Addr deriving Eq
+data ElabFrame d = Appl d | Upda !Addr deriving (Eq, Show)
 type ElabStack d = [ElabFrame d]
 
 -- | Abstraction function to stateful maximal trace semantics
@@ -146,32 +149,38 @@ type ElabStack d = [ElabFrame d]
 --      UpdateA addr | Upda p : s' <- s -> yield p (src p, Map.insert n d env, s')
 --      BindA addr -> _
 
-type Configu = (Label, Name :-> D, ElabStack D)
-type Cache = Addr :-> (Value D, [Configu])
+type Configu = (Cache, Label, Name :-> D, ElabStack D)
+type Cache = Addr :-> (Label, Value D, Label)
 
 -- | Abstraction function to stateful maximal trace semantics
 absS :: Trace D -> [Configu]
-absS p = map (go . snocifyT) (prefs p)
+absS p = map (go . snocifyT) (prefs (traceShowId p))
   where
     go :: Trace D -> Configu
-    go (End l) = (l, Map.empty, [])
-    go (SnocT p a l) =
-      let c0@(_, env, s) = go p in
+    go (End l) = (Map.empty, l, Map.empty, [])
+    go p0@(SnocT p a l) =
+      let (cache, _, _, s) = go p in
+      let env = varrho p0 in
       case a of -- TODO: What if l /= l'?
-        ValA v -> (l, env, s)
-        App1A n -> (l, env, Appl (Map.findWithDefault botD n env):s)
-        App2A n | Appl d : s' <- s -> (l, Map.insert n d env, s')
-        LookupA addr -> (l, varrho (defn addr p), Upda addr:s)
-        UpdateA addr | Upda _ : s' <- s -> (l, env, s') -- ??? TODO
-        BindA addr n d -> (l, Map.insert n d env, s)
+        ValA v -> (cache, l, env, s)
+        App1A n -> (cache, l, env, Appl (Map.findWithDefault botD n env):s)
+        App2A n _ | let (Appl d : s') = s -> (cache, l, env, s')
+        LookupA addr
+          | Just (l1,v,l2) <- Map.lookup addr cache -> assert (l == l1) (cache, l, env, Upda addr:s)
+          | otherwise -> (cache, l, env, Upda addr:s)
+        UpdateA addr
+          | let (Upda addr' : s') = s
+          -> (updateCache cache addr' p, l, env, s')
+        BindA addr n d -> (cache, l, env, s)
 
     varrho (End l) = Map.empty
     varrho (SnocT p a _) = case a of
       BindA addr n d -> Map.insert n d (varrho p)
       App1A _ -> varrho p
-      App2A n d -> _ varrho p
+      App2A n d -> Map.insert n d (varrho (skipUpdates p))
       LookupA addr -> varrho (defn addr p)
       UpdateA addr -> varrho (skipLookup addr p)
+      ValA v -> varrho p
 
     defn addr p@(SnocT _ (BindA addr' _ _) _) | addr == addr' = p
     defn addr (SnocT p _ _) = defn addr p
@@ -181,50 +190,18 @@ absS p = map (go . snocifyT) (prefs p)
     skipLookup addr (SnocT p _ _) = skipLookup addr p
     skipLookup addr (End _) = error $ "no defn " ++ show addr
 
+    skipUpdates (SnocT p (UpdateA _) _) = skipUpdates p
+    skipUpdates p@(SnocT _ (ValA _) _) = p
+    skipUpdates p = error (show p)
+
     unwindUntil pred p@(SnocT _ a _) | pred a = Just p
     unwindUntil pred (SnocT p _ _) = unwindUntil pred p
     unwindUntil pred (End _) = Nothing
 
+    updateCache cache addr (SnocT p UpdateA{} _) = updateCache cache addr p
+    updateCache cache addr (SnocT p (ValA v) l2) = Map.insert addr (dst p, v, l2) cache
+    updateCache cache addr p = error $ show cache ++ show addr ++ show p
 
--- | Reconstruct a Configuration sequence from a trace of the program
--- The abstraction function to machine configurations.
---config :: Show d => Expr -> Trace d -> [Configuration]
---config e p0 = yield (consifyT p0) init
---  where
---    init = (Map.empty, e, [])
---    traceIt f res = trace (f res) res
---    yield t c = c : go t c
---    go (End l) _ = []
---    go (ConsT l a p) c0@(h, Fix e, s) = -- trace ("her " ++ unlines [show c0, show a, show p]) $
---      case a of
---        ValA _ -> go p c0 -- No corresponding small-step transition
---        BindA _      | Let n e1 e2 <- e ->
---          let n' = freshName n h
---              e1' = subst n n' e1
---              e2' = subst n n' e2
---              c1 = (Map.insert n' e1' h, e2', s)
---           in yield p c1
---        App1A        | App e n <- e ->
---          let c1 = (h, e, Apply n:s)
---              (p1,~(Just (ConsT l App2A p2))) = splitBalancedPrefix p
---              cs1 = yield p1 c1
---              (h',Fix (Lam m eb),Apply n':s') = last cs1
---              c2 = (h', subst m n' eb, s')
---              cs2 = yield p2 c2
---           in -- trace ("app1: " ++ unlines [show c1,show p, show p1, show p2]) $
---              cs1 ++ cs2
---
---        LookupA _    | Var n <- e ->
---          let c1 = (h, h Map.! n, Update n:s)
---              (p1,~(Just p2)) = splitBalancedPrefix p
---              cs1 = yield p1 c1
---              (h',e',Update n':s') = last cs1
---              c2 = (Map.insert n' e' h', e', s')
---              cs2 = yield p2 c2
---           in -- trace ("look: " ++ show c1 ++ show (takeT 4 p1)) $
---              cs1 ++ cs2
---
---        _ -> error (show l ++ " " ++ show a ++ " " ++ show (Fix e) ++ "\n"  ++ show (takeT 20 p0) ++ "\n" ++ show (takeT 20 p))
 
 -- | Derive the pointwise prefix trace semantics from a maximal and inifinite
 -- trace semantics (Section 6.12 of POAI).

@@ -218,7 +218,7 @@ hash = lenT
 data Action d
   = ValA !(Value d)
   | App1A !Name
-  | App2A !Name
+  | App2A !Name !d
   | BindA !Addr !Name !d
   | LookupA !Addr
   | UpdateA !Addr
@@ -227,7 +227,7 @@ data Action d
 instance Eq (Action d) where
   ValA _ == ValA _ = True
   App1A n1 == App1A n2 = n1 == n2
-  App2A n1 == App2A n2 = n1 == n2
+  App2A n1 _d1 == App2A n2 _d2 = n1 == n2
   BindA a1 n1 _d1 == BindA a2 n2 _d2 = a1 == a2 && n1 == n2
   LookupA a1 == LookupA a2 = a1 == a2
   UpdateA a1 == UpdateA a2 = a1 == a2
@@ -238,7 +238,7 @@ instance Show d => Show (Action d) where
   show (LookupA a) = "look(" ++ show a ++ ")"
   show (UpdateA a) = "upd(" ++ show a ++ ")"
   show (App1A _) = "app1"
-  show (App2A _) = "app2"
+  show (App2A _ _) = "app2"
   show (BindA a n _) = "bind(" ++ n ++ "_" ++ show a ++ ")"
 
 data Trace d
@@ -271,7 +271,7 @@ dimapTrace to from (SnocT t a l) = SnocT (dimapTrace to from t) (dimapAction to 
 dimapAction :: (d1 -> d2) -> (d2 -> d1) -> Action d1 -> Action d2
 dimapAction to from (App1A n)     = App1A n
 dimapAction to from (ValA v)      = ValA (dimapValue to from v)
-dimapAction to from (App2A n)     = App2A n
+dimapAction to from (App2A n d)   = App2A n (to d)
 dimapAction to from (BindA a n d) = BindA a n (to d)
 dimapAction to from (LookupA a)   = LookupA a
 dimapAction to from (UpdateA a)   = UpdateA a
@@ -330,9 +330,10 @@ valT t = go (snocifyT t)
     go (SnocT t a l) = case a of
       ValA _    -> Just (ConsT (dst t) a (End l))
       App1A _   -> Nothing
-      App2A _   -> Nothing
+      App2A _ _ -> Nothing
       BindA {}  -> Nothing
       LookupA _ -> Nothing
+      UpdateA _ -> go t
     go ConsT {} = error "invalid"
 
 val :: Trace d -> Maybe (Value d)
@@ -403,12 +404,12 @@ splitBalancedPrefix p = -- traceIt (\(r,_)->"split" ++ "\n"  ++ show (takeT 3 p)
         let (p1, mp2) = work p
             pref = ConsT l (App1A n) p1
             (suff, mp') = case mp2 of
-              Just (ConsT l2 (App2A n) p2) ->
+              Just (ConsT l2 (App2A n d) p2) ->
                 let (p3, mp4) = work p2
-                 in (ConsT l2 (App2A n) p3,mp4)
+                 in (ConsT l2 (App2A n d) p3,mp4)
               _ -> (End (dst p1), Nothing)
          in (pref `concatT` suff,mp')
-      App2A _ -> (p',Nothing) -- Not balanced; one closing parens too many
+      App2A _ _ -> (p',Nothing) -- Not balanced; one closing parens too many
 
 -- | Loop indefinitely for infinite traces!
 isBalanced :: Show d => Trace d -> Bool
