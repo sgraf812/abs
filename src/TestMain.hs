@@ -20,6 +20,7 @@ import           Control.Concurrent.Async.Lifted (race)
 import           Expr hiding (assert)
 import           ByNeed
 import           Direct
+import qualified Cont
 
 
 main :: IO ()
@@ -76,3 +77,13 @@ prop_maxinf_maximal_trace_stuck_or_balanced =
     --  classify (fromString (printf "larger than %3d" (20*n))) (Gen.exprSize e > 20*n)
     --forM_ [0..20] $ \n ->
     --  classify (fromString (printf "longer than %3d" (20*n))) (lenT p' > 20*n)
+
+prop_maxinf_direct_is_cont =
+  property $ do
+    e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
+    let le = label e
+    let p1 = maxinf le Map.empty (End le.at)
+    let p2 = Cont.maxinf le Map.empty (End le.at)
+    let p1' = takeT (sizeFactor*100) p1
+    let p2' = takeT (sizeFactor*100) p2
+    p1' === Cont.concTrace p2'

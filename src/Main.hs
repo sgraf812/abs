@@ -57,6 +57,8 @@ e_fresh = label $ let_ "x" (lam "a" (let_ "y" a y)) $
                   let_ "e" (app x "z") $
                   app (app d "e") "d"
 
+e_abs :: LExpr
+e_abs = label $ read "let id = λx.x in let const = λy.λz.y in const const id"
 
 e_stuck :: LExpr
 e_stuck = label x
@@ -77,7 +79,7 @@ e_W = label $ let_ "y" (lam "x" (app x "x")) (app y "y")
 -- >>> takeT 10 $ Direct.maxinf e_2 Map.empty (End (at e_2))
 -- [1]-bind->[5]-app1->[6]-app1->[7]-look([1]_0)->[2]-val(fun)->[4]-app2->[3]-look([1]_0)->[2]-val(fun)->[4]-app2->[3]-look([1]_0)->[2]
 main :: IO ()
-main = forM_ [(10,e_1), (10,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_W), (10,e_bool), (50,e_fresh)] $ \(n,e) -> do
+main = forM_ [(10,e_1), (10,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_W), (10,e_bool), (50,e_fresh), (50,e_abs)] $ \(n,e) -> do
 -- main = forM_ [e_1, e2, e_stuck] $ \e -> do
   putStrLn "============================="
   putStrLn ""
@@ -89,8 +91,9 @@ main = forM_ [(10,e_1), (10,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_W), (
   putStrLn "maximal and infinite trace (scary maximal trace semantics)"
   print $ takeT n $ Direct.maxinf e Map.empty (End (at e))
   putStrLn "-----------------------------"
---  putStrLn "maximal and infinite trace continuation semantics"
---  print $ takeT n $ Cont.unC (Cont.absD (Direct.maxinfD e Map.empty)) (End (at e)) id
+  putStrLn "maximal and infinite trace continuation semantics"
+  print $ takeT n $ Cont.unC (Cont.absD (Direct.maxinfD e Map.empty)) (End (at e)) id
+  putStrLn "-----------------------------"
   putStrLn "smallStep (transition system)"
   let ss1 = take n $ smallStep (unlabel e)
   mapM_ print ss1
@@ -111,3 +114,6 @@ main = forM_ [(10,e_1), (10,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_W), (
 
   putStrLn "absS"
   mapM_ print $ Direct.absS $ takeT (n-1) $ Direct.maxinf e Map.empty (End (at e))
+
+  putStr "dead: "
+  print $ Set.difference (letBoundVars (unlabel e)) $ absL Set.empty $ takeT (n-1) $ Direct.maxinf e Map.empty (End (at e))

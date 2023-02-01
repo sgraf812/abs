@@ -9,7 +9,7 @@
 {-# LANGUAGE ImpredicativeTypes #-}
 {-# LANGUAGE MultiWayIf #-}
 
-module Cont (C(..), maxinf, absD, concD) where
+module Cont (C(..), maxinf, absD, concD, concTrace) where
 
 import Control.Applicative
 import Control.Monad
@@ -28,59 +28,89 @@ import qualified Direct
 import Expr
 import ByNeed
 
-newtype C = C { unC :: forall r. Trace C -> (Trace C -> r) -> r }
-type E = Trace C -> Trace C
+newtype C = C { unC :: Trace C -> (Trace C -> Trace C) -> Trace C }
 
-botE :: E
-botE p = End (dst p)
-
-instance Eq E where
-  _ == _ = True
-
-instance Ord E where
-  compare _ _ = EQ
-
-instance Show E where
-  show _ = "E"
+botC :: C
+botC = C $ \p k -> k (End (dst p))
 
 instance Show C where
   show _ = "C"
 
---step :: Action C -> Label -> C -> C
---step a l sem = C $ \k -> unC sem (k . (\e p -> ConsT (dst p) a (e (SnocT p a l))))
+step :: Action C -> Label -> C
+step a l = C $ \p k -> ConsT (dst p) a $ k $ SnocT p a l
 
-step :: Action C -> Label -> C -> C
-step a l sem = C $ \p k -> unC sem (SnocT p a l) (k . ConsT (dst p) a)
+stepSame :: Action C -> C
+stepSame a = C $ \p k -> ConsT (dst p) a $ k $ SnocT p a (dst p)
+
+memo :: Addr -> C -> C
+memo addr sem = askP $ \pi -> case lookup (snocifyT pi) of
+  Just pv -> C $ \p k -> pv `concatT` k (rewrite p (src pv) `concatT` pv)
+  Nothing -> sem
+  where
+    rewrite (SnocT p a@LookupA{} _l) l = SnocT p a l
+    lookup (SnocT p a _)
+      | UpdateA addr' <- a
+      , addr == addr'
+      = valT p
+      | otherwise = lookup p
+    lookup (End l) = Nothing
+
+(>->) :: Action C -> Label -> C
+a >-> l = step a l
+infix 7 >->
+
+-- | This operator is associative:
+--
+--   C c1 <++> (C c2 <++> C c3)
+-- = C c1 <++> (C $ \p k -> c2 p (\p' -> c3 p' k))
+-- = C $ \p k -> c1 p (\p' -> c2 p' (\p'' -> c3 p'' k))
+-- = C $ \p k -> unC (C $ \p k -> c1 p (\p' -> c2 p' k)) p (\p'' -> c3 p'' k)
+-- = C $ \p k -> unC (C c1 <++> C c2) p (\p'' -> c3 p'' k)
+-- = (C c1 <++> C c2) <++> C c3
+--
+-- But it's best associated to the right to expose the prefix early (as for
+-- `(++)`).
+concatC :: C -> C -> C
+concatC (C c1) (C c2) = C $ \p k -> c1 p (\p' -> c2 p' k)
+infixr 5 `concatC`
+
+(<++>) :: C -> C -> C
+(<++>) = concatC
+infixr 5 <++>
+
+instance Semigroup C where
+  (<>) = (<++>)
+
+instance Monoid C where
+  mempty = C $ \p k -> k p
+
+askP :: (Trace C -> C) -> C
+askP f = C $ \p k -> unC (f p) p k
 
 (!⊥) :: Ord a => (a :-> C) -> a -> C
-env !⊥ x = Map.findWithDefault (C $ \p k -> k (botE p)) x env
+env !⊥ x = Map.findWithDefault botC x env
 
 maxinf :: LExpr -> (Name :-> C) -> Trace C -> Trace C
 maxinf le env p
-  | dst p /= le.at = botE p -- stuck. act as bottom! Only happens on the initial call, I guess???
-                                -- In all other cases we go through the step function.
-  | otherwise      = unC (go le env) p id
+  | dst p /= le.at = unC botC p id
+  | otherwise      = unC (go le env) p (End . dst)
   where
-    traceP :: C -> C
-    traceP c = C $ \p k -> traceShow p $ unC c p k
     go :: LExpr -> (Name :-> C) -> C
     go le !env = case le.thing of
       Var n -> env !⊥ n
-      App le n -> C $ \p k ->
-        let apply p2 =
-              case val p2 of
-                    Just (Fun f) -> unC (f (env !⊥ n)) (concatT p p2) (concatT p2)
-                    Nothing      -> undefined -- actually Bottom! Can't happen in a closed
-                                              -- program without Data types, though
-         in unC (step (App1A n) le.at (go le env)) p (k . apply)
-      Lam n le ->
-        let val = Fun (\c -> step (App2A n c) (le.at) (go le (Map.insert n c env)))
-         in C $ \_p k -> k (ConsT le.at (ValA val) (End le.after))
-      Let n le1 le2 -> C $ \p ->
+      App le n ->
+        let apply = askP $ \p -> case val p of
+              Just (Fun f) -> f (env !⊥ n)
+              Nothing      -> botC
+         in step (App1A n) le.at <++> go le env <++> apply
+      Lam n le' ->
+        let val = Fun (\c -> App2A n c >-> le'.at <++> go le' (Map.insert n c env))
+         in step (ValA val) le.after
+      Let n le1 le2 -> askP $ \p ->
         let a = hash p
-            c = step (LookupA a) le1.at (go le1 env')
+            c = step (LookupA a) le1.at <++> memo a (go le1 env') <++> stepSame (UpdateA a)
             env' = Map.insert n c env
-         in unC (step (BindA a n c) le2.at (go le2 env')) p
+         in step (BindA a n c) le2.at <++> go le2 env'
 
 -- | As Reynolds first proved in "On the relation between Direct and
 -- Continuation Semantics", we have `concD . absD = id`. In our case,
@@ -136,7 +166,7 @@ absD :: Direct.D -> Cont.C
 absD (Direct.D d) = Cont.C $ \p k -> k . absTrace . d . concTrace $ p
 
 concD :: Cont.C -> Direct.D
-concD (Cont.C c) = Direct.D $ \p -> c (absTrace p) concTrace
+concD (Cont.C c) = Direct.D $ \p -> concTrace $ c (absTrace p) id
 
 absValue :: Value Direct.D -> Value Cont.C
 absValue (Fun f) = Fun (absD . f . concD)

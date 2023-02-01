@@ -9,7 +9,7 @@
 {-# LANGUAGE ImpredicativeTypes #-}
 {-# LANGUAGE MultiWayIf #-}
 
-module Direct (D(..), maxinf, maxinfD, absS) where
+module Direct (D(..), maxinf, maxinfD, absS, snoc) where
 
 import Control.Applicative
 import Control.Monad
@@ -130,11 +130,71 @@ maxinf le env p
             env' = Map.insert n d env
          in unD (cons (BindA a n d) le2.at (go le2 env')) p
 
-data ElabFrame d = Appl d | Upda !Addr deriving (Eq, Show)
-type ElabStack d = [ElabFrame d]
+-- Stateful semantics, Mk I:
+--
+--data ElabFrame d = Appl d | Upda !Addr deriving (Eq, Show)
+--type ElabStack d = [ElabFrame d]
+--
+--type Configu = (Cache, Label, Name :-> D, ElabStack D)
+--type Cache = Addr :-> (Label, Value D, Label)
+--
+---- | Abstraction function to stateful maximal trace semantics
+--absS :: Trace D -> [Configu]
+--absS p = map (go . snocifyT) (prefs (traceShowId p))
+--  where
+--    go :: Trace D -> Configu
+--    go (End l) = (Map.empty, l, Map.empty, [])
+--    go p0@(SnocT p a l) =
+--      let (cache, _, _, s) = go p in
+--      let env = varrho p0 in
+--      case a of -- TODO: What if l /= l'?
+--        ValA v -> (cache, l, env, s)
+--        App1A n -> (cache, l, env, Appl (Map.findWithDefault botD n env):s)
+--        App2A n _ | let (Appl d : s') = s -> (cache, l, env, s')
+--        LookupA addr
+--          | Just (l1,v,l2) <- Map.lookup addr cache -> assert (l == l1) (cache, l, env, Upda addr:s)
+--          | otherwise -> (cache, l, env, Upda addr:s)
+--        UpdateA addr
+--          | let (Upda addr' : s') = s
+--          -> assert (addr == addr') (updateCache cache addr' p, l, env, s')
+--        BindA addr n d -> (cache, l, env, s)
+--
+--    varrho (End l) = Map.empty
+--    varrho (SnocT p a _) = case a of
+--      BindA addr n d -> Map.insert n d (varrho p)
+--      App1A _ -> varrho p
+--      App2A n d -> Map.insert n d (varrho (skipUpdates p))
+--      LookupA addr -> varrho (defn addr p)
+--      UpdateA addr -> varrho (skipLookup addr p)
+--      ValA v -> varrho p
+--
+--    defn addr p@(SnocT _ (BindA addr' _ _) _) | addr == addr' = p
+--    defn addr (SnocT p _ _) = defn addr p
+--    defn addr (End _) = error $ "no defn " ++ show addr
+--
+--    skipLookup addr (SnocT p (LookupA addr') _) | addr == addr' = p
+--    skipLookup addr (SnocT p _ _) = skipLookup addr p
+--    skipLookup addr (End _) = error $ "no defn " ++ show addr
+--
+--    skipUpdates (SnocT p (UpdateA _) _) = skipUpdates p
+--    skipUpdates p@(SnocT _ (ValA _) _) = p
+--    skipUpdates p = error (show p)
+--
+--    unwindUntil pred p@(SnocT _ a _) | pred a = Just p
+--    unwindUntil pred (SnocT p _ _) = unwindUntil pred p
+--    unwindUntil pred (End _) = Nothing
+--
+--    updateCache cache addr (SnocT p UpdateA{} _) = updateCache cache addr p
+--    updateCache cache addr (SnocT p (ValA v) l2) = Map.insert addr (dst p, v, l2) cache
+--    updateCache cache addr p = error $ show cache ++ show addr ++ show p
 
-type Configu = (Cache, Label, Name :-> D, ElabStack D)
-type Cache = Addr :-> (Label, Value D, Label)
+-- Stateful semantics, Mk II:
+-- Add layer of indirection for *all* Ds, put D in the cache, which is now a heap
+-- Then represent heap entries by closures, Done! CESK/Sestoft Mk III
+data ElabFrame = Appl !Addr | Upda !Addr deriving (Eq, Show)
+type ElabStack = [ElabFrame]
+
+type Configu = (Addr:->D, Label, Name :-> Addr, ElabStack)
 
 -- | Abstraction function to stateful maximal trace semantics
 absS :: Trace D -> [Configu]
@@ -143,25 +203,24 @@ absS p = map (go . snocifyT) (prefs (traceShowId p))
     go :: Trace D -> Configu
     go (End l) = (Map.empty, l, Map.empty, [])
     go p0@(SnocT p a l) =
-      let (cache, _, _, s) = go p in
+      let (_, _, _, s) = go p in
       let env = varrho p0 in
+      let (_, heap) = varheap p0 in
       case a of -- TODO: What if l /= l'?
-        ValA v -> (cache, l, env, s)
-        App1A n -> (cache, l, env, Appl (Map.findWithDefault botD n env):s)
-        App2A n _ | let (Appl d : s') = s -> (cache, l, env, s')
-        LookupA addr
-          | Just (l1,v,l2) <- Map.lookup addr cache -> assert (l == l1) (cache, l, env, Upda addr:s)
-          | otherwise -> (cache, l, env, Upda addr:s)
+        ValA v -> (heap, l, env, s)
+        App1A n -> (heap, l, env, Appl (env Map.! n):s)
+        App2A n _ | let (Appl d : s') = s -> (heap, l, env, s')
+        LookupA addr -> (heap, l, env, Upda addr:s)
         UpdateA addr
           | let (Upda addr' : s') = s
-          -> assert (addr == addr') (updateCache cache addr' p, l, env, s')
-        BindA addr n d -> (cache, l, env, s)
+          -> assert (addr == addr') (updateHeap heap addr' p, l, env, s')
+        BindA addr n d -> (heap, l, env, s)
 
     varrho (End l) = Map.empty
     varrho (SnocT p a _) = case a of
-      BindA addr n d -> Map.insert n d (varrho p)
+      BindA addr n d -> Map.insert n addr (varrho p)
       App1A _ -> varrho p
-      App2A n d -> Map.insert n d (varrho (skipUpdates p))
+      App2A n d | SnocT p' (App1A n') _ <- skipApp1 p, let addr = varrho p' Map.! n' -> Map.insert n addr (varrho (skipUpdates p))
       LookupA addr -> varrho (defn addr p)
       UpdateA addr -> varrho (skipLookup addr p)
       ValA v -> varrho p
@@ -178,13 +237,32 @@ absS p = map (go . snocifyT) (prefs (traceShowId p))
     skipUpdates p@(SnocT _ (ValA _) _) = p
     skipUpdates p = error (show p)
 
+    skipApp1 p0@(SnocT p a _) = case a of
+      App1A{} -> p0
+      UpdateA addr -> skipApp1 $ skipLookup addr p
+      App2A{} | (SnocT p' _ _) <- skipApp1 p -> skipApp1 p'
+      ValA{} -> skipApp1 p
+      LookupA{} -> error "what"
+      BindA{} -> skipApp1 p
+
     unwindUntil pred p@(SnocT _ a _) | pred a = Just p
     unwindUntil pred (SnocT p _ _) = unwindUntil pred p
     unwindUntil pred (End _) = Nothing
 
-    updateCache cache addr (SnocT p UpdateA{} _) = updateCache cache addr p
-    updateCache cache addr (SnocT p (ValA v) l2) = Map.insert addr (dst p, v, l2) cache
-    updateCache cache addr p = error $ show cache ++ show addr ++ show p
+    varheap (End l) = (undefined, Map.empty)
+    varheap (SnocT p a l) =
+      let (d,heap') = varheap p in
+      case a of
+        ValA v -> (D $ const $ SnocT (End (dst p)) a l, heap')
+        UpdateA addr -> (d, Map.insert addr d heap')
+        BindA addr n d -> (undefined, Map.insert addr d heap')
+        LookupA addr -> (undefined, heap')
+        App1A _ -> (undefined, heap')
+        App2A{} -> (undefined, heap')
+
+    updateHeap heap addr (SnocT p UpdateA{} _) = updateHeap heap addr p
+    updateHeap heap addr (SnocT p a@ValA{} l2) = Map.insert addr (D $ const $ SnocT (End (dst p)) a l2) heap
+    updateHeap heap addr p = error $ show heap ++ show addr ++ show p
 
 
 -- | Derive the pointwise prefix trace semantics from a maximal and inifinite

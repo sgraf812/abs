@@ -439,6 +439,14 @@ varOccs e = go Set.empty e
     go vs (FLam x e) = go (Set.insert x vs) e
     go vs (FLet x e1 e2) = go (go (Set.insert x vs) e1) e2
 
+letBoundVars :: Expr -> Set Name
+letBoundVars e = go Set.empty e
+  where
+    go vs (FVar x) = vs
+    go vs (FApp e x) = go vs e
+    go vs (FLam x e) = go vs e
+    go vs (FLet x e1 e2) = go (go (Set.insert x vs) e1) e2
+
 uniqify :: Expr -> Expr
 uniqify e = evalState (go Map.empty e) Set.empty
   where
@@ -463,3 +471,12 @@ uniqify e = evalState (go Map.empty e) Set.empty
       put (Set.insert n' s)
       pure n'
 
+-- | Potential liveness abstraction
+absL :: Set Name -> Trace d -> Set Name
+absL liveAtEnd p = go Map.empty (consifyT p)
+  where
+    go env (End l) = liveAtEnd
+    go env (ConsT l a p) = case a of
+      BindA addr n _ -> go (Map.insert addr n env) p
+      LookupA addr   -> Set.insert (env Map.! addr) (go env p)
+      _              -> go env p
