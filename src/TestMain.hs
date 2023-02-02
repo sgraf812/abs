@@ -87,3 +87,11 @@ prop_maxinf_direct_is_cont =
     let p1' = takeT (sizeFactor*100) p1
     let p2' = takeT (sizeFactor*100) p2
     p1' === Cont.concTrace p2'
+
+prop_direct_cont_abs =
+  property $ do
+    e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
+    let le = label e
+    let p = Cont.maxinf le Map.empty (End le.at)
+    let p' = takeT (sizeFactor*100) p
+    p' === Cont.absTrace (Cont.concTrace p')

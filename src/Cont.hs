@@ -9,7 +9,7 @@
 {-# LANGUAGE ImpredicativeTypes #-}
 {-# LANGUAGE MultiWayIf #-}
 
-module Cont (C(..), maxinf, absD, concD, concTrace) where
+module Cont (C(..), maxinf, absD, concD, absTrace, concTrace) where
 
 import Control.Applicative
 import Control.Monad
@@ -28,23 +28,23 @@ import qualified Direct
 import Expr
 import ByNeed
 
-newtype C = C { unC :: Trace C -> (Trace C -> Trace C) -> Trace C }
+newtype C = C { unC :: (Trace C -> Trace C) -> Trace C -> Trace C }
 
 botC :: C
-botC = C $ \p k -> k (End (dst p))
+botC = C $ \k p -> k (End (dst p))
 
 instance Show C where
   show _ = "C"
 
 step :: Action C -> Label -> C
-step a l = C $ \p k -> ConsT (dst p) a $ k $ SnocT p a l
+step a l = C $ \k p -> ConsT (dst p) a $ k $ SnocT p a l
 
 stepSame :: Action C -> C
-stepSame a = C $ \p k -> ConsT (dst p) a $ k $ SnocT p a (dst p)
+stepSame a = C $ \k p -> ConsT (dst p) a $ k $ SnocT p a (dst p)
 
 memo :: Addr -> C -> C
 memo addr sem = askP $ \pi -> case lookup (snocifyT pi) of
-  Just pv -> C $ \p k -> pv `concatT` k (rewrite p (src pv) `concatT` pv)
+  Just pv -> C $ \k p -> pv `concatT` k (rewrite p (src pv) `concatT` pv)
   Nothing -> sem
   where
     rewrite (SnocT p a@LookupA{} _l) l = SnocT p a l
@@ -59,19 +59,10 @@ memo addr sem = askP $ \pi -> case lookup (snocifyT pi) of
 a >-> l = step a l
 infix 7 >->
 
--- | This operator is associative:
---
---   C c1 <++> (C c2 <++> C c3)
--- = C c1 <++> (C $ \p k -> c2 p (\p' -> c3 p' k))
--- = C $ \p k -> c1 p (\p' -> c2 p' (\p'' -> c3 p'' k))
--- = C $ \p k -> unC (C $ \p k -> c1 p (\p' -> c2 p' k)) p (\p'' -> c3 p'' k)
--- = C $ \p k -> unC (C c1 <++> C c2) p (\p'' -> c3 p'' k)
--- = (C c1 <++> C c2) <++> C c3
---
--- But it's best associated to the right to expose the prefix early (as for
--- `(++)`).
 concatC :: C -> C -> C
-concatC (C c1) (C c2) = C $ \p k -> c1 p (\p' -> c2 p' k)
+concatC (C c1) (C c2) = C $ c1 . c2
+-- = C $ \k -> c1 (c2 k)
+-- = C $ \k p -> c1 (c2 k) p
 infixr 5 `concatC`
 
 (<++>) :: C -> C -> C
@@ -82,18 +73,18 @@ instance Semigroup C where
   (<>) = (<++>)
 
 instance Monoid C where
-  mempty = C $ \p k -> k p
+  mempty = C $ \k p -> k p
 
 askP :: (Trace C -> C) -> C
-askP f = C $ \p k -> unC (f p) p k
+askP f = C $ \k p -> unC (f p) k p
 
 (!⊥) :: Ord a => (a :-> C) -> a -> C
 env !⊥ x = Map.findWithDefault botC x env
 
 maxinf :: LExpr -> (Name :-> C) -> Trace C -> Trace C
 maxinf le env p
-  | dst p /= le.at = unC botC p id
-  | otherwise      = unC (go le env) p (End . dst)
+  | dst p /= le.at = unC botC id p
+  | otherwise      = unC (go le env) (End . dst) p
   where
     go :: LExpr -> (Name :-> C) -> C
     go le !env = case le.thing of
@@ -118,7 +109,7 @@ maxinf le env p
 -- observation:
 --
 -- Observation: By parametricity, any `c::C` must be of the form
--- `\p k -> k (f p)` for some `f::Trace C -> Trace C`.
+-- `\k p -> k (f p)` for some `f::Trace C -> Trace C`.
 --
 -- First off, two lemmas about trace abstraction and botE and botD:
 --  1. concTrace.botE.absTrace = unD botD
@@ -129,15 +120,15 @@ maxinf le env p
 --
 -- Here is the proof for n=0:
 --   concD(absD botD)
--- = concD(C $ \p k -> k . absTrace . unD botD . concTrace $ p)
--- = concD(C $ \p k -> k (botE p))
+-- = concD(C $ \k p -> k . absTrace . unD botD . concTrace $ p)
+-- = concD(C $ \k p -> k (botE p))
 -- = botC
 --
 --   absD(concD botC)
--- = absD(concD (C (\p k -> k (botE p))))
--- = C $ \p k -> k $ absTrace (concTrace (botE (absTrace (concTrace p))))
--- = C $ \p k -> k $ absTrace (unD botD (concTrace p))  { lemma (1) }
--- = C $ \p k -> k $ botE p                             { lemma (2) }
+-- = absD(concD (C (\k p -> k (botE p))))
+-- = C $ \k p -> k $ absTrace (concTrace (botE (absTrace (concTrace p))))
+-- = C $ \k p -> k $ absTrace (unD botD (concTrace p))  { lemma (1) }
+-- = C $ \k p -> k $ botE p                             { lemma (2) }
 -- = botC
 --
 -- For the inductive step, assume that The recursive calls to (absD . concD)
@@ -145,28 +136,28 @@ maxinf le env p
 -- current one n+1.
 --
 -- concD(absD (D d))
--- = concD (C $ \p k -> k . absTrace . d . concTrace $ p)
--- = D $ \p -> (\p k -> k . absTrace . d . concTrace $ p) (absTrace p) concTrace
+-- = concD (C $ \k p -> k . absTrace . d . concTrace $ p)
+-- = D $ \p -> (\k p -> k . absTrace . d . concTrace $ p) (absTrace p) concTrace
 -- = D $ \p -> concTrace . absTrace . d . concTrace . absTrace $ p
 --   { apply IH, get (concTrace . absTrace = id) for sub-terms }
 -- = D $ \p -> id . d . id $ p
 -- = D d
 --
 -- absD(concD c)
--- = absD(concD (C (\p k -> k (f p))))    { parametricity }
--- = absD(D $ \p -> (\p k -> k (f p)) (absTrace p) concTrace)
+-- = absD(concD (C (\k p -> k (f p))))    { parametricity }
+-- = absD(D $ \p -> (\k p -> k (f p)) (absTrace p) concTrace)
 -- = absD(D $ \p -> concTrace (f (absTrace p)))
--- = C $ \p k -> k . absTrace . (\p -> concTrace (f (absTrace p))) . concTrace $ p
--- = C $ \p k -> k $ absTrace (concTrace (f (absTrace (concTrace p))))
+-- = C $ \k p -> k . absTrace . (\p -> concTrace (f (absTrace p))) . concTrace $ p
+-- = C $ \k p -> k $ absTrace (concTrace (f (absTrace (concTrace p))))
 --   { apply IH, get (absTrace . concTrace = id) for sub-terms }
--- = C $ \p k -> k $ id (f (id p))
--- = C $ \p k -> k (f p)
+-- = C $ \k p -> k $ id (f (id p))
+-- = C $ \k p -> k (f p)
 -- = c
 absD :: Direct.D -> Cont.C
-absD (Direct.D d) = Cont.C $ \p k -> k . absTrace . d . concTrace $ p
+absD (Direct.D d) = Cont.C $ \k p -> k . absTrace . d . concTrace $ p
 
 concD :: Cont.C -> Direct.D
-concD (Cont.C c) = Direct.D $ \p -> concTrace $ c (absTrace p) id
+concD (Cont.C c) = Direct.D $ \p -> concTrace $ c id (absTrace p)
 
 absValue :: Value Direct.D -> Value Cont.C
 absValue (Fun f) = Fun (absD . f . concD)

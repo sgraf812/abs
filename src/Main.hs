@@ -92,7 +92,7 @@ main = forM_ [(10,e_1), (10,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_W), (
   print $ takeT n $ Direct.maxinf e Map.empty (End (at e))
   putStrLn "-----------------------------"
   putStrLn "maximal and infinite trace continuation semantics"
-  print $ takeT n $ Cont.unC (Cont.absD (Direct.maxinfD e Map.empty)) (End (at e)) id
+  print $ takeT n $ Cont.unC (Cont.absD (Direct.maxinfD e Map.empty)) id (End (at e))
   putStrLn "-----------------------------"
   putStrLn "smallStep (transition system)"
   let ss1 = take n $ smallStep (unlabel e)
