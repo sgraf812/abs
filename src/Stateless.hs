@@ -34,7 +34,7 @@ import Data.Bifunctor
 import Data.List.NonEmpty (NonEmpty)
 
 orElse = flip fromMaybe
-infixr 4 `orElse`
+infixl 1 `orElse`
 
 type instance AddrOrD D = Addr
 data instance Value D = Fun D
@@ -117,6 +117,9 @@ memo a sem = D $ \pi -> case lookup a (consifyT pi) of
       | otherwise     = lookup pk pi'
     lookup pk (End l) = Nothing
 
+type Env = Name :-> Addr
+type Heap = Addr :-> (Env, D)
+
 maxinfD :: LExpr -> (Name :-> D) -> D
 maxinfD le env = D (maxinf le env)
 
@@ -145,65 +148,24 @@ maxinf le p
             env' = Map.insert n d env
          in unD (cons (BindA n a d) le2.at (go le2 env')) p
     lookup :: Ord a => a -> (a :-> Addr) -> (Addr :-> D) -> D
-    lookup x env heap = (Map.lookup x env >>= (Map.!? heap)) `orElse` botD
+    lookup x env heap = Map.lookup x env >>= (heap Map.!?) `orElse` botD
 
--- Stateful semantics, Mk I:
---
---data ElabFrame d = Appl d | Upda !Addr deriving (Eq, Show)
---type ElabStack d = [ElabFrame d]
---
---type Configu = (Cache, Label, Name :-> D, ElabStack D)
---type Cache = Addr :-> (Label, Value D, Label)
---
----- | Abstraction function to stateful maximal trace semantics
---absS :: Trace D -> [Configu]
---absS p = map (go . snocifyT) (prefs (traceShowId p))
---  where
---    go :: Trace D -> Configu
---    go (End l) = (Map.empty, l, Map.empty, [])
---    go p0@(SnocT p a l) =
---      let (cache, _, _, s) = go p in
---      let env = varrho p0 in
---      case a of -- TODO: What if l /= l'?
---        ValA v -> (cache, l, env, s)
---        App1A n -> (cache, l, env, Appl (Map.findWithDefault botD n env):s)
---        App2A n _ | let (Appl d : s') = s -> (cache, l, env, s')
---        LookupA addr
---          | Just (l1,v,l2) <- Map.lookup addr cache -> assert (l == l1) (cache, l, env, Upda addr:s)
---          | otherwise -> (cache, l, env, Upda addr:s)
---        UpdateA addr
---          | let (Upda addr' : s') = s
---          -> assert (addr == addr') (updateCache cache addr' p, l, env, s')
---        BindA addr n d -> (cache, l, env, s)
---
---    varrho (End l) = Map.empty
---    varrho (SnocT p a _) = case a of
---      BindA addr n d -> Map.insert n d (varrho p)
---      App1A _ -> varrho p
---      App2A n d -> Map.insert n d (varrho (skipUpdates p))
---      LookupA addr -> varrho (defn addr p)
---      UpdateA addr -> varrho (skipLookup addr p)
---      ValA v -> varrho p
---
---    defn addr p@(SnocT _ (BindA addr' _ _) _) | addr == addr' = p
---    defn addr (SnocT p _ _) = defn addr p
---    defn addr (End _) = error $ "no defn " ++ show addr
---
---    skipLookup addr (SnocT p (LookupA addr') _) | addr == addr' = p
---    skipLookup addr (SnocT p _ _) = skipLookup addr p
---    skipLookup addr (End _) = error $ "no defn " ++ show addr
---
---    skipUpdates (SnocT p (UpdateA _) _) = skipUpdates p
---    skipUpdates p@(SnocT _ (ValA _) _) = p
---    skipUpdates p = error (show p)
---
---    unwindUntil pred p@(SnocT _ a _) | pred a = Just p
---    unwindUntil pred (SnocT p _ _) = unwindUntil pred p
---    unwindUntil pred (End _) = Nothing
---
---    updateCache cache addr (SnocT p UpdateA{} _) = updateCache cache addr p
---    updateCache cache addr (SnocT p (ValA v) l2) = Map.insert addr (dst p, v, l2) cache
---    updateCache cache addr p = error $ show cache ++ show addr ++ show p
+materialiseState :: Trace D -> (Env, Heap)
+materialiseState = go [] (Map.empty, Map.empty) . consifyT
+  where
+    go :: [Env] -> (Env, Heap) -> Trace D -> (Env, Heap)
+    go stk s             (End l)       = s
+    go stk s@(env, heap) (ConsT l a t) = case a of
+      ValA{} -> go stk s t
+      BindA n a d | let !env' = Map.insert n a env
+        -> go stk (env', Map.insert a (env',d) heap) t
+      LookupA _ -> go (env:stk) s t
+      App1A _ -> go (env:stk) s t
+      UpdateA a | env':stk' <- stk -> (env', heap)
+        -- The d stored in the heap is still accurate
+        -- as it looks for Update actions in the init
+        -- trace
+      App2A n a | env':stk' <- stk -> (Map.insert n a env', heap)
 
 -- Stateful semantics, Mk II:
 -- Add layer of indirection for *all* Ds, put D in the cache, which is now a heap
