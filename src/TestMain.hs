@@ -21,6 +21,8 @@ import           Expr hiding (assert)
 import           ByNeed
 import           Direct
 import qualified Cont
+import qualified Stateful
+import qualified Data.List.NonEmpty as NE
 
 
 main :: IO ()
@@ -95,3 +97,16 @@ prop_direct_cont_abs =
     let p = Cont.maxinf le Map.empty (End le.at)
     let p' = takeT (sizeFactor*100) p
     p' === Cont.absTrace (Cont.concTrace p')
+
+prop_stateful_maxinf =
+  property $ do
+    e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
+    let le = label e
+    let p1 = Stateful.stateful le
+    let p2 = maxinf le Map.empty (End le.at)
+    let p1' = NE.take (sizeFactor*100) p1
+    let p2' = NE.take (sizeFactor*100) (traceLabels p2)
+    let ignoring_dagger (Stateful.Dagger,_,_,_) _ = True
+        ignoring_dagger (Stateful.E e,_,_,_)    l = e.at == l
+    diff p1' (\a b -> and (zipWith ignoring_dagger a b)) p2'
+

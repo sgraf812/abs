@@ -24,8 +24,10 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Debug.Trace
 import qualified Direct
+import qualified Stateful
 import Expr
 import Text.Show (showListWith)
+import qualified Data.List.NonEmpty as NE
 
 x, y, z, a, b, c, d, e, f, i, t :: Expr
 x : y : z : a : b : c : d : e : f : i : t : _ = map (Fix . Var . (: [])) "xyzabcdefit"
@@ -97,6 +99,9 @@ main = forM_ [(10,e_1), (10,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_W), (
   putStrLn "smallStep (transition system)"
   let ss1 = take n $ smallStep (unlabel e)
   mapM_ print ss1
+  putStrLn "-----------------------------"
+  putStrLn "stateful trace semantics"
+  mapM_ print $ take n $ NE.toList $ Stateful.stateful e
   putStrLn "-----------------------------"
 --  putStrLn "tracesAt 2"
 --  mapM_ print $ tracesAt 2 $ takeT 10 $ Direct.maxinf e Map.empty (End (at e))

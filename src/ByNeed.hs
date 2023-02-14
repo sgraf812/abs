@@ -13,7 +13,7 @@
 module ByNeed (Configuration, Heap, Stack, Frame(..),
                smallStep, config, defnSmallStep, absSmallStep,
                absSmallStepEntry,
-               D(.., DFun, DBot), Lifted(..), denot) where
+               D(..), Lifted(..), denot) where
 
 import Control.Applicative
 import Control.Monad
@@ -108,18 +108,12 @@ config e p0 = yield (consifyT p0) init
 defnSmallStep :: Show d => Expr -> (Trace d -> Trace d) -> [Configuration]
 defnSmallStep e sem = config e (sem (End ((label e).at)))
 
-newtype SSValue = SV (Lifted (Value SS))
-
-pattern SVFun :: (SS -> SS) -> SSValue
-pattern SVFun f = SV (Lifted (Fun f))
-
-pattern SVBot :: SSValue
-pattern SVBot = SV Bottom
+data SSValue = SVBot | SVFun (SS -> SS)
 
 type SS = (SSValue, Configuration -> SmallTrace)
 
 botSS :: SS
-botSS = (SV Bottom, EndS)
+botSS = (SVBot, EndS)
 
 absSmallStepEntry :: LExpr -> [Configuration]
 absSmallStepEntry le = extractConfigurations $ snd (absSmallStep (unlabel le) Map.empty) init
@@ -221,25 +215,19 @@ absSmallStep (Fix e) env = case e of
 runSS :: Int -> String -> IO ()
 runSS n s = mapM_ print $ take n $ absSmallStepEntry (label (uniqify (read s)))
 
-newtype D = D (Lifted (Value D))
-
-pattern DFun :: (D -> D) -> D
-pattern DFun f = D (Lifted (Fun f))
-
-pattern DBot :: D
-pattern DBot = D Bottom
+data D = DBot' | DFun' (D -> D)
 
 denot :: Expr -> (Name :-> D) -> D
 denot (Fix e) env = case e of
   Var n   -> env !⊥ n
-  Lam n e -> DFun (\d -> denot e (Map.insert n d env))
+  Lam n e -> DFun' (\d -> denot e (Map.insert n d env))
   App e n -> case denot e env of
-    DFun f -> f (env !⊥ n)
-    _      -> DBot
+    DFun' f -> f (env !⊥ n)
+    _      -> DBot'
   Let n e1 e2 ->
     let env' = Map.insert n (denot e1 env') env in
     denot e2 env'
   where
     (!⊥) :: Ord a => (a :-> D) -> a -> D
-    env !⊥ x = Map.findWithDefault DBot x env
+    env !⊥ x = Map.findWithDefault DBot' x env
 

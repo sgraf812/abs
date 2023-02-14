@@ -12,7 +12,7 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
-module Direct (D(..), Value(..), maxinf, maxinfD, absS, snoc) where
+module Stateless (D(..), Value(..), maxinf, maxinfD, absS, snoc) where
 
 import Control.Applicative
 import Control.Monad
@@ -34,9 +34,10 @@ import Data.Bifunctor
 import Data.List.NonEmpty (NonEmpty)
 
 orElse = flip fromMaybe
+infixr 4 `orElse`
 
-type instance AddrOrD D = D
-data instance Value D = Fun (D -> D)
+type instance AddrOrD D = Addr
+data instance Value D = Fun D
 
 instance Show (Value D) where
   show (Fun _) = "fun"
@@ -56,7 +57,7 @@ instance Ord (Value D) where
 --
 -- d1(p) ⊑ d2(p)  <=>  ∃p'. d1(p) `concatT` p' = d2(p)
 --
--- Note that a `D` is *not* a monotone map; indeed our semantics isn't.
+-- Note that a `D` is *not* a monotone map.
 -- The ordering is to be understood pointwise, ⊑^. .
 --
 -- There exists a bottom element `⊥(p) = End (dst p)` and directed sets have a
@@ -116,20 +117,19 @@ memo a sem = D $ \pi -> case lookup a (consifyT pi) of
       | otherwise     = lookup pk pi'
     lookup pk (End l) = Nothing
 
-(!⊥) :: Ord a => (a :-> D) -> a -> D
-env !⊥ x = Map.findWithDefault botD x env
-
 maxinfD :: LExpr -> (Name :-> D) -> D
 maxinfD le env = D (maxinf le env)
 
-maxinf :: LExpr -> (Name :-> D) -> Trace D -> Trace D
-maxinf le env p
+maxinf :: LExpr -> Trace D -> Trace D
+maxinf le p
   | dst p /= le.at = unD botD p
-  | otherwise      = unD (go le env) p
+  | otherwise      = unD (go le) p
   where
-    go :: LExpr -> (Name :-> D) -> D
-    go le !env = case le.thing of
-      Var n -> env !⊥ n
+    go :: LExpr -> D
+    go le = case le.thing of
+      Var n -> D $ \p ->
+        let (env,heap) = materialiseState p
+         in env !⊥ n
       App le n -> D $ \p ->
         let p2 = unD (cons (App1A n) le.at (go le env)) p
          in concatT p2 $ case val p2 of
@@ -144,6 +144,8 @@ maxinf le env p
             d = cons (LookupA a) le1.at (snoc (memo a (go le1 env')) (UpdateA a))
             env' = Map.insert n d env
          in unD (cons (BindA n a d) le2.at (go le2 env')) p
+    lookup :: Ord a => a -> (a :-> Addr) -> (Addr :-> D) -> D
+    lookup x env heap = (Map.lookup x env >>= (Map.!? heap)) `orElse` botD
 
 -- Stateful semantics, Mk I:
 --

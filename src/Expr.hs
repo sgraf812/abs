@@ -5,6 +5,8 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE ImpredicativeTypes #-}
+{-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module Expr where
 
@@ -26,6 +28,8 @@ import qualified Text.ParserCombinators.ReadP as ReadP
 import qualified Text.Read as Read
 import Data.Char
 import GHC.Stack
+import Data.List.NonEmpty (NonEmpty)
+import qualified Data.List.NonEmpty as NE
 
 assert :: HasCallStack => Bool -> a -> a
 assert True  x = x
@@ -40,21 +44,11 @@ data ExprF expr
   | Let Name expr expr
 
 newtype Fix f = Fix {unFix :: f (Fix f)}
-
+type Expr = Fix ExprF
 pattern FVar n = Fix (Var n)
 pattern FApp e x = Fix (App e x)
 pattern FLam x e = Fix (Lam x e)
 pattern FLet x e1 e2 = Fix (Let x e1 e2)
-
-type Label = Int
-
-data Labelled f = Lab
-  { at :: !Label,
-    thing :: !(f (Labelled f)),
-    after :: !Label
-  }
-
-type Expr = Fix ExprF
 
 instance Eq Expr where
   e1 == e2 = go Map.empty Map.empty e1 e2
@@ -147,7 +141,19 @@ instance Read Expr where
         guard (all isAlphaNum v)
         pure v
 
+type Label = Int
+
+data Labelled f = Lab
+  { at :: !Label,
+    thing :: !(f (Labelled f)),
+    after :: !Label
+  }
+
 type LExpr = Labelled ExprF
+pattern LVar n <- (thing -> Var n)
+pattern LApp e x <- (thing -> App e x)
+pattern LLam x e <- (thing -> Lam x e)
+pattern LLet x e1 e2 <- (thing -> Let x e1 e2)
 
 instance Show LExpr where
   show le = case le.thing of
@@ -199,27 +205,19 @@ indexAtLE l e = fromMaybe (error (show l ++ " " ++ show e)) (find e)
 atToAfter :: LExpr -> Label -> Label
 atToAfter e at = (indexAtLE at e).after
 
-data Value d = Fun (d -> d)
-
-instance Show (Value d) where
-  show (Fun _) = "fun"
-
-instance Eq (Value d) where
-  _ == _ = True
-
-instance Ord (Value d) where
-  compare _ _ = EQ
-
 type Addr = Int
 
 hash :: Trace d -> Addr
 hash = lenT
 
+type family AddrOrD d
+data family Value d
+
 data Action d
   = ValA !(Value d)
   | App1A !Name
-  | App2A !Name !d
-  | BindA !Addr !Name !d
+  | App2A !Name !(AddrOrD d)
+  | BindA !Name !Addr !d
   | LookupA !Addr
   | UpdateA !Addr
 
@@ -228,18 +226,18 @@ instance Eq (Action d) where
   ValA _ == ValA _ = True
   App1A n1 == App1A n2 = n1 == n2
   App2A n1 _d1 == App2A n2 _d2 = n1 == n2
-  BindA a1 n1 _d1 == BindA a2 n2 _d2 = a1 == a2 && n1 == n2
+  BindA n1 a1 _d1 == BindA n2 a2 _d2 = a1 == a2 && n1 == n2
   LookupA a1 == LookupA a2 = a1 == a2
   UpdateA a1 == UpdateA a2 = a1 == a2
   _ == _ = False
 
 instance Show d => Show (Action d) where
-  show (ValA v) = "val(" ++ show v ++ ")"
+  show (ValA v) = "val"
   show (LookupA a) = "look(" ++ show a ++ ")"
   show (UpdateA a) = "upd(" ++ show a ++ ")"
   show (App1A _) = "app1"
   show (App2A _ _) = "app2"
-  show (BindA a n _) = "bind(" ++ n ++ "_" ++ show a ++ ")"
+  show (BindA n a _) = "bind(" ++ n ++ "_" ++ show a ++ ")"
 
 data Trace d
   = End !Label
@@ -262,22 +260,6 @@ src (SnocT t _ _) = src t
 dst (End l) = l
 dst (SnocT _ _ l) = l
 dst (ConsT _ _ t) = dst t
-
-dimapTrace :: (d1 -> d2) -> (d2 -> d1) -> Trace d1 -> Trace d2
-dimapTrace to from (End l) = End l
-dimapTrace to from (ConsT l a t) = ConsT l (dimapAction to from a) (dimapTrace to from t)
-dimapTrace to from (SnocT t a l) = SnocT (dimapTrace to from t) (dimapAction to from a) l
-
-dimapAction :: (d1 -> d2) -> (d2 -> d1) -> Action d1 -> Action d2
-dimapAction to from (App1A n)     = App1A n
-dimapAction to from (ValA v)      = ValA (dimapValue to from v)
-dimapAction to from (App2A n d)   = App2A n (to d)
-dimapAction to from (BindA a n d) = BindA a n (to d)
-dimapAction to from (LookupA a)   = LookupA a
-dimapAction to from (UpdateA a)   = UpdateA a
-
-dimapValue :: (d1 -> d2) -> (d2 -> d1) -> Value d1 -> Value d2
-dimapValue to from (Fun f) = Fun (to . f . from)
 
 consifyT :: Trace d -> Trace d
 consifyT t = go End t
@@ -359,6 +341,12 @@ prefs t = go (consifyT t)
       ConsT l a t' -> End l : map (ConsT l a) (go t')
       SnocT{} -> undefined
 
+traceLabels :: Trace d -> NonEmpty Label
+traceLabels = go . consifyT
+  where
+    go (End l) = pure l
+    go (ConsT l _ t) = l `NE.cons` go t
+
 subst :: Name -> Name -> Expr -> Expr
 subst x y (Fix e) = Fix $ case e of
   _ | x == y -> e
@@ -388,6 +376,9 @@ freshName n h = go n
     go n
       | n `Map.member` h = go (n ++ "'")
       | otherwise = n
+
+freshAddr :: Addr :-> a -> Addr
+freshAddr h = Map.size h
 
 splitBalancedPrefix :: Show d => Trace d -> (Trace d, Maybe (Trace d))
 splitBalancedPrefix p = -- traceIt (\(r,_)->"split" ++ "\n"  ++ show (takeT 3 p) ++ "\n" ++ show (takeT 3 r)) $
@@ -477,6 +468,6 @@ absL liveAtEnd p = go Map.empty (consifyT p)
   where
     go env (End l) = liveAtEnd
     go env (ConsT l a p) = case a of
-      BindA addr n _ -> go (Map.insert addr n env) p
+      BindA n addr _ -> go (Map.insert addr n env) p
       LookupA addr   -> Set.insert (env Map.! addr) (go env p)
       _              -> go env p

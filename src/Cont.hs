@@ -8,6 +8,8 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ImpredicativeTypes #-}
 {-# LANGUAGE MultiWayIf #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 
 module Cont (C(..), maxinf, absD, concD, absTrace, concTrace) where
 
@@ -27,6 +29,9 @@ import qualified Direct
 
 import Expr
 import ByNeed
+
+type instance AddrOrD C = C
+data instance Value C = CFun (C -> C)
 
 newtype C = C { unC :: (Trace C -> Trace C) -> Trace C -> Trace C }
 
@@ -91,17 +96,17 @@ maxinf le env p
       Var n -> env !⊥ n
       App le n ->
         let apply = askP $ \p -> case val p of
-              Just (Fun f) -> f (env !⊥ n)
+              Just (CFun f) -> f (env !⊥ n)
               Nothing      -> botC
          in step (App1A n) le.at <++> go le env <++> apply
       Lam n le' ->
-        let val = Fun (\c -> App2A n c >-> le'.at <++> go le' (Map.insert n c env))
+        let val = CFun (\c -> App2A n c >-> le'.at <++> go le' (Map.insert n c env))
          in step (ValA val) le.after
       Let n le1 le2 -> askP $ \p ->
         let a = hash p
             c = step (LookupA a) le1.at <++> memo a (go le1 env') <++> stepSame (UpdateA a)
             env' = Map.insert n c env
-         in step (BindA a n c) le2.at <++> go le2 env'
+         in step (BindA n a c) le2.at <++> go le2 env'
 
 -- | As Reynolds first proved in "On the relation between Direct and
 -- Continuation Semantics", we have `concD . absD = id`. In our case,
@@ -160,7 +165,7 @@ concD :: Cont.C -> Direct.D
 concD (Cont.C c) = Direct.D $ \p -> concTrace $ c id (absTrace p)
 
 absValue :: Value Direct.D -> Value Cont.C
-absValue (Fun f) = Fun (absD . f . concD)
+absValue (Direct.Fun f) = CFun (absD . f . concD)
 
 absAction :: Action Direct.D -> Action Cont.C
 absAction = dimapAction absD concD
@@ -180,3 +185,26 @@ absTrace = dimapTrace absD concD
 
 concTrace :: Trace Cont.C -> Trace Direct.D
 concTrace = dimapTrace concD absD
+
+class (AddrOrD d1 ~ d1, AddrOrD d2 ~ d2) => Dimappable d1 d2 where
+  dimapValue :: (d1 -> d2) -> (d2 -> d1) -> Value d1 -> Value d2
+
+dimapTrace :: Dimappable d1 d2 => (d1 -> d2) -> (d2 -> d1) -> Trace d1 -> Trace d2
+dimapTrace to from (End l) = End l
+dimapTrace to from (ConsT l a t) = ConsT l (dimapAction to from a) (dimapTrace to from t)
+dimapTrace to from (SnocT t a l) = SnocT (dimapTrace to from t) (dimapAction to from a) l
+
+dimapAction :: Dimappable d1 d2 => (d1 -> d2) -> (d2 -> d1) -> Action d1 -> Action d2
+dimapAction to from (App1A n)     = App1A n
+dimapAction to from (ValA v)      = ValA (dimapValue to from v)
+dimapAction to from (App2A n a)   = App2A n (to a)
+dimapAction to from (BindA n a d) = BindA n a (to d)
+dimapAction to from (LookupA a)   = LookupA a
+dimapAction to from (UpdateA a)   = UpdateA a
+
+instance Dimappable Direct.D Cont.C where
+  dimapValue to from (Direct.Fun f) = CFun (to . f . from)
+
+instance Dimappable Cont.C Direct.D where
+  dimapValue to from (CFun f) = Direct.Fun (to . f . from)
+
