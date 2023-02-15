@@ -105,11 +105,11 @@ prop_stateful_maxinf =
     let le = label e
     let p1 = Stateful.stateful le
     let p2 = maxinf le Map.empty (End le.at)
-    let p1' = NE.take (sizeFactor*100) p1
-    let p2' = NE.take (sizeFactor*100) (traceLabels p2)
+    let p1' = NE.take (sizeFactor*100+1) p1
+    let p2' = takeT (sizeFactor*100) p2
     let ignoring_dagger (Stateful.Dagger,_,_,_) _ = True
         ignoring_dagger (Stateful.E e,_,_,_)    l = e.at == l
-    diff p1' (\a b -> length a == length b && and (zipWith ignoring_dagger a b)) p2'
+    diff p1' (\a b -> length a == length b && and (zipWith ignoring_dagger a b)) (NE.toList $ traceLabels p2')
 
 prop_stateless_maxinf =
   property $ do

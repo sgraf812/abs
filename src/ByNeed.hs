@@ -56,7 +56,7 @@ smallStep e = go (Map.empty, e, [])
     go c@(h, fe@(Fix e), s) =
       c : case (e, s) of
         (Var n, _) | n `Map.member` h -> go (h, h Map.! n, Update n:s)
-        (App e x, _) -> go (h, e, Apply x : s)
+        (App e x, _) | Map.member x h -> go (h, e, Apply x : s)
         (Lam x e, []) -> []
         (Lam x e, Apply y : s') -> go (h, subst x y e, s')
         (Let x e1 e2, _) ->
@@ -95,15 +95,18 @@ config e p0 = yield (consifyT p0) init
 
         LookupA _    | Var n <- e ->
           let c1 = (h, h Map.! n, Update n:s)
-              (p1,~(Just (ConsT l UpdateA{} p2))) = splitBalancedPrefix p
+              (p1,mb_p2) = splitBalancedPrefix p
               cs1 = yield p1 c1
               (h',e',Update n':s') = last cs1
               c2 = (Map.insert n' e' h', e', s')
-              cs2 = yield p2 c2
+              cs2 = case mb_p2 of
+                Just (ConsT l UpdateA{} p2) -> yield p2 c2
+                _                           -> []
            in -- trace ("look: " ++ show c1 ++ show (takeT 4 p1)) $
               cs1 ++ cs2
 
-        _ -> error (show l ++ " " ++ show a ++ " " ++ show (Fix e) ++ "\n"  ++ show (takeT 20 p0) ++ "\n" ++ show (takeT 20 p))
+        _ -> -- trace (show l ++ " " ++ show a ++ " " ++ show (Fix e) ++ "\n"  ++ show (takeT 20 p0) ++ "\n" ++ show (takeT 20 p))
+             []
 
 defnSmallStep :: Show d => Expr -> (Trace d -> Trace d) -> [Configuration]
 defnSmallStep e sem = config e (sem (End ((label e).at)))
@@ -125,14 +128,14 @@ data Transition = LookupT | UpdateT | App1T | App2T | LetT deriving (Show, Eq, O
 okTransition :: Transition -> Configuration -> Maybe Configuration
 okTransition LookupT (h,FVar x,s) | Just e <- Map.lookup x h = Just (h, e, Update x : s)
 okTransition UpdateT (h,v@FLam{},Update x : s) = Just (Map.insert x v h, v, s)
-okTransition App1T   (h,FApp e x,s) = Just (h, e, Apply x : s)
+okTransition App1T   (h,FApp e x,s) | Map.member x h = Just (h, e, Apply x : s)
 okTransition App2T   (h,FLam x e,Apply y : s) = Just (h, subst x y e, s)
 okTransition LetT    (h,FLet x e1 e2,s) = Just (Map.insert x' e1' h, e2', s)
   where
     x' = freshName x h
     e1' = subst x x' e1
     e2' = subst x x' e2
-okTransition t c | trace (show t ++ " " ++ show c) True = undefined
+--okTransition t c | trace (show t ++ " " ++ show c) True = undefined
 okTransition _ _ = Nothing
 
 data SmallTrace

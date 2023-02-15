@@ -143,10 +143,12 @@ instance Read Expr where
 
 type Label = Int
 
+daggerLabel :: Label
+daggerLabel = 0
+
 data Labelled f = Lab
-  { at :: !Label,
-    thing :: !(f (Labelled f)),
-    after :: !Label
+  { at :: !Label
+  , thing :: !(f (Labelled f))
   }
 
 type LExpr = Labelled ExprF
@@ -156,11 +158,17 @@ pattern LLam x e <- (thing -> Lam x e)
 pattern LLet x e1 e2 <- (thing -> Let x e1 e2)
 
 instance Show LExpr where
-  show le = case le.thing of
-    App e n -> show le.at ++ "(" ++ show e ++ " " ++ n ++ ")"
-    Lam n e -> show le.at ++ "(" ++ "λ" ++ n ++ ". " ++ show e ++ ")" ++ show le.after
-    Var n -> show le.at ++ "(" ++ n ++ ")"
-    Let n e1 e2 -> show le.at ++ "(" ++ "let " ++ n ++ " = " ++ show e1 ++ " in " ++ show e2 ++ ")"
+  show le = showLabel le.at ++ parens (case le.thing of
+    App e n -> show e ++ " " ++ n
+    Lam n e -> "λ" ++ n ++ ". " ++ show e
+    Var n -> n
+    Let n e1 e2 -> "let " ++ n ++ " = " ++ show e1 ++ " in " ++ show e2)
+    where
+      parens s = "(" ++ s ++ ")"
+
+showLabel :: Label -> String
+showLabel l | l == daggerLabel = "‡"
+            | otherwise        = show l
 
 label :: Expr -> LExpr
 label (Fix e) = evalState (lab e) 1
@@ -170,17 +178,17 @@ label (Fix e) = evalState (lab e) 1
     lab :: ExprF Expr -> State Label LExpr
     lab e = do
       at <- next
-      (le, after) <- case e of
-        Var n -> pure (Var n, -1) -- this label will never be used
+      le <- case e of
+        Var n -> pure (Var n)
         App (Fix e) n -> do
           le <- lab e
-          pure (App le n, after le)
-        Lam n (Fix e) -> (,) <$> (Lam n <$> lab e) <*> next
+          pure (App le n)
+        Lam n (Fix e) -> Lam n <$> lab e
         Let n (Fix e1) (Fix e2) -> do
           le1 <- lab e1
           le2 <- lab e2
-          pure (Let n le1 le2, le2.after)
-      pure Lab {at = at, thing = le, after = after}
+          pure (Let n le1 le2)
+      pure Lab {at = at, thing = le}
 
 unlabel :: LExpr -> Expr
 unlabel le = Fix $ case le.thing of
@@ -201,9 +209,6 @@ indexAtLE l e = fromMaybe (error (show l ++ " " ++ show e)) (find e)
       App e _ -> find e
       Lam _ e -> find e
       Let _ e1 e2 -> find e1 <|> find e2
-
-atToAfter :: LExpr -> Label -> Label
-atToAfter e at = (indexAtLE at e).after
 
 type Addr = Int
 
@@ -236,8 +241,8 @@ instance Show d => Show (Action d) where
   show (LookupA a) = "look(" ++ show a ++ ")"
   show (UpdateA a) = "upd(" ++ show a ++ ")"
   show (App1A _) = "app1"
-  show (App2A _ _) = "app2"
-  show (BindA n a _) = "bind(" ++ n ++ "_" ++ show a ++ ")"
+  show (App2A n a) = "app2(" ++ n ++ ")"
+  show (BindA n a _) = "bind(" ++ n ++ "↦" ++ show a ++ ")"
 
 data Trace d
   = End !Label
@@ -249,9 +254,12 @@ data Trace d
 -- infinite traces Haskell data types are greatest fixed-points
 
 instance Show d => Show (Trace d) where
-  show (End l) = "[" ++ show l ++ "]"
-  show (ConsT l a t) = "[" ++ show l ++ "]-" ++ show a ++ "->" ++ show t ++ ""
-  show (SnocT t a l) = show t ++ "-" ++ show a ++ "->[" ++ show l ++ "]"
+  show (End l) = "[" ++ showLabel l ++ "]"
+  show (ConsT l a t) = "[" ++ showLabel l ++ "]-" ++ show a ++ "->" ++ show t ++ ""
+  show (SnocT t a l) = show t ++ "-" ++ show a ++ "->[" ++ showLabel l ++ "]"
+
+sameLabelsInTrace :: Trace d1 -> Trace d2 -> Bool
+sameLabelsInTrace t1 t2 = traceLabels t1 == traceLabels t2
 
 src, dst :: Trace d -> Label
 src (End l) = l

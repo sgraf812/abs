@@ -44,8 +44,11 @@ instance Show C where
 step :: Action C -> Label -> C
 step a l = C $ \k p -> ConsT (dst p) a $ k $ SnocT p a l
 
-stepSame :: Action C -> C
-stepSame a = C $ \k p -> ConsT (dst p) a $ k $ SnocT p a (dst p)
+stepDagger :: Action C -> C
+stepDagger a = C $ \k p ->
+  if dst p /= daggerLabel
+    then k p
+    else ConsT daggerLabel a $ k $ SnocT p a daggerLabel
 
 memo :: Addr -> C -> C
 memo addr sem = askP $ \pi -> case lookup (snocifyT pi) of
@@ -104,10 +107,10 @@ maxinf le env p
           Nothing -> botC
       Lam n le' ->
         let val = CFun (\c -> App2A n c >-> le'.at <++> go le' (Map.insert n c env))
-         in step (ValA val) le.after
+         in step (ValA val) daggerLabel
       Let n le1 le2 -> askP $ \p ->
         let a = hash p
-            c = step (LookupA a) le1.at <++> memo a (go le1 env') <++> stepSame (UpdateA a)
+            c = step (LookupA a) le1.at <++> memo a (go le1 env') <++> stepDagger (UpdateA a)
             env' = Map.insert n c env
          in step (BindA n a c) le2.at <++> go le2 env'
 

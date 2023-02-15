@@ -99,8 +99,8 @@ instance Show D where
 cons :: Action D -> Label -> D -> D
 cons a l sem = D $ \p -> ConsT (dst p) a $ unD sem $ SnocT p a l
 
-snoc :: D -> Action D -> D
-snoc sem a = D $ \p -> let p' = (unD sem p) in SnocT p' a (dst p')
+snoc :: D -> Label -> Action D -> D
+snoc sem l a = D $ \p -> let p' = (unD sem p) in p' `concatT` if dst p' /= l then End (dst p') else ConsT l a (End l)
 
 memo :: Addr -> D -> D
 memo a sem = D $ \pi -> case lookup a (consifyT pi) of
@@ -140,10 +140,10 @@ maxinf le env p
              Nothing -> unD botD p
       Lam n le' ->
         let val = Fun (\d -> cons (App2A n d) (le'.at) (go le' (Map.insert n d env)))
-         in D $ \_ -> ConsT le.at (ValA val) (End le.after)
+         in D $ \_ -> ConsT le.at (ValA val) (End daggerLabel)
       Let n le1 le2 -> D $ \p ->
         let a = hash p
-            d = cons (LookupA a) le1.at (snoc (memo a (go le1 env')) (UpdateA a))
+            d = cons (LookupA a) le1.at (snoc (memo a (go le1 env')) daggerLabel (UpdateA a))
             env' = Map.insert n d env
          in unD (cons (BindA n a d) le2.at (go le2 env')) p
 

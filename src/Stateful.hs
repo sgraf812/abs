@@ -10,7 +10,7 @@
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE PatternSynonyms #-}
 
-module Stateful (D(..), DExpr(..), STrace, stateful, statefulD) where
+module Stateful (D(..), DExpr(..), STrace, straceLabels, stateful, statefulD) where
 
 import Control.Applicative
 import Control.Monad
@@ -58,6 +58,12 @@ newtype D = D { unD :: State -> STrace }
 data SValue = Fun D deriving Show
 
 type STrace = NonEmpty State
+
+straceLabels :: STrace -> NonEmpty Label
+straceLabels = fmap go
+  where
+    go (Dagger,_,_,_) = daggerLabel
+    go (E le,_,_,_)   = le.at
 
 instance Show DExpr where
   show Dagger = "‡"
@@ -124,7 +130,7 @@ statefulD le = D $ \s -> case s of
       Let n le1 le2 -> step (let_ (go le1)) >.> go le2
 
 ret :: SValue -> PartialD
-ret v (E sv,env,heap,cont) | isVal sv = [(Dagger, env, heap, Return (sv, env, v) : cont)]
+ret v (E sv,env,heap,cont) | isVal sv = [(Dagger, Map.empty, heap, Return (sv, env, v) : cont)]
 ret _ _ = []
 
 var1 :: PartialD
@@ -137,9 +143,10 @@ var1 _ = []
 var2 :: PartialD
 var2 (Dagger, env, heap, Return (sv, env', v):Update a:cont)
   | isVal sv
+  , Map.null env
   = [(Dagger, env, Map.insert a (sv,env',step d) heap, Return (sv, env', v):cont)]
   where
-    d (E sv,env,heap,cont) | isVal sv  = [(Dagger, env, heap, Return (sv, env', v):cont)]
+    d (E sv',_,heap,cont) | sv'.at == sv.at = [(Dagger, Map.empty, heap, Return (sv, env', v):cont)]
     d _ = []
 var2 _ = []
 

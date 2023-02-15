@@ -66,6 +66,12 @@ e_abs = label $ read "let id = λx.x in let const = λy.λz.y in const const id"
 e_stuck :: LExpr
 e_stuck = label x
 
+e_stuck_app :: LExpr
+e_stuck_app = label (read "a a")
+
+e_stuck_let :: LExpr
+e_stuck_let = label (read "let a = b in a")
+
 e_w :: LExpr
 e_w = label $ let_ "x" x x
 
@@ -82,7 +88,7 @@ e_W = label $ let_ "y" (lam "x" (app x "x")) (app y "y")
 -- >>> takeT 10 $ Direct.maxinf e_2 Map.empty (End (at e_2))
 -- [1]-bind->[5]-app1->[6]-app1->[7]-look([1]_0)->[2]-val(fun)->[4]-app2->[3]-look([1]_0)->[2]-val(fun)->[4]-app2->[3]-look([1]_0)->[2]
 main :: IO ()
-main = forM_ [(10,e_1), (10,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_W), (10,e_bool), (50,e_fresh), (50,e_abs), (4,label $ read "a a")] $ \(n,e) -> do
+main = forM_ [(15,e_1), (15,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_W), (10,e_bool), (50,e_fresh), (50,e_abs), (4,e_stuck_app), (20,e_stuck_let)] $ \(n,e) -> do
 -- main = forM_ [e_1, e2, e_stuck] $ \e -> do
   putStrLn "============================="
   putStrLn ""
@@ -92,31 +98,39 @@ main = forM_ [(10,e_1), (10,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_W), (
 --  print $ ByName.denot (unlabel e) Map.empty
   putStrLn "-----------------------------"
   putStrLn "maximal and infinite trace (scary maximal trace semantics)"
-  print $ takeT n $ Direct.maxinf e Map.empty (End (at e))
+  let maxinf = takeT n $ Direct.maxinf e Map.empty (End (at e))
+  print maxinf
+  putStrLn "-----------------------------"
+  putStrLn "maximal and infinite trace, stateless"
+  let stateless = takeT n $ Stateless.maxinf' e
+  print stateless
   putStrLn "-----------------------------"
   putStrLn "maximal and infinite trace continuation semantics"
-  print $ takeT n $ Cont.unC (Cont.absD (Direct.maxinfD e Map.empty)) id (End (at e))
+  let cont = takeT n $ Cont.unC (Cont.absD (Direct.maxinfD e Map.empty)) id (End (at e))
+  print cont
+  putStrLn "-----------------------------"
+  putStrLn "stateful trace semantics"
+  let stateful = NE.fromList $ NE.take (n+1) $ Stateful.stateful e
+  mapM_ print stateful
   putStrLn "-----------------------------"
   putStrLn "smallStep (transition system)"
   let ss1 = take n $ smallStep (unlabel e)
   mapM_ print ss1
-  putStrLn "-----------------------------"
-  putStrLn "stateful trace semantics"
-  mapM_ print $ take n $ NE.toList $ Stateful.stateful e
-  putStrLn "-----------------------------"
-  putStrLn "maximal and infinite trace, stateless"
-  print $ takeT n $ Stateless.maxinf' e
   putStrLn "-----------------------------"
 --  putStrLn "tracesAt 2"
 --  mapM_ print $ tracesAt 2 $ takeT 10 $ Direct.maxinf e Map.empty (End (at e))
   putStrLn "defnSmallStep (derived from maximal trace)"
   let ss2 = take n $ defnSmallStep (unlabel e) (Direct.maxinf e Map.empty)
   mapM_ print ss2
-  putStrLn "absSmallStep (derived from maximal trace semantics)"
-  let ss2 = take n $ absSmallStepEntry e
-  mapM_ print ss2
   putStrLn "-----------------------------"
-  when (ss1 /= ss2) (error "NOT EQUAL")
+  putStrLn "absSmallStep (derived from maximal trace semantics)"
+  let ss3 = take n $ absSmallStepEntry e
+  mapM_ print ss3
+  putStrLn "-----------------------------"
+  when (ss1 /= ss2) (error "smallstep /= defnSmallStep")
+  when (ss1 /= ss3) (error "smallstep /= absSmallStep")
+  when (traceLabels maxinf /= traceLabels stateless) (error "maxinf /= stateless")
+  when (traceLabels maxinf /= Stateful.straceLabels stateful) (error "maxinf /= stateful")
 
 --  putStrLn "splitBalancedPrefix"
 --  forM_ [20,19..0] $ \m -> print $ fmap fst $ splitBalancedPrefix $ dropT m $ takeT n $ Direct.maxinf e Map.empty (End (at e))

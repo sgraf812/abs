@@ -100,8 +100,8 @@ instance Show D where
 cons :: Action D -> Label -> D -> D
 cons a l sem = D $ \p -> ConsT (dst p) a $ unD sem $ SnocT p a l
 
-snoc :: D -> Action D -> D
-snoc sem a = D $ \p -> let p' = (unD sem p) in SnocT p' a (dst p')
+snoc :: D -> Label -> Action D -> D
+snoc sem l a = D $ \p -> let p' = (unD sem p) in p' `concatT` if dst p' /= l then End (dst p') else ConsT l a (End l)
 
 memo :: Addr -> D -> D
 memo a sem = D $ \pi -> case lookup a (consifyT pi) of
@@ -135,7 +135,8 @@ maxinf le = askP $ \p -> case le.thing of
   Var n ->
     let (env,heap) = materialiseState p
         (env',d) = lookup n env heap
-     in d
+     in -- trace (n ++ " " ++ showLabel le.at ++ " " ++ show env ++ " " ++ show heap ++ " " ++ show p)
+        d
   App le n -> D $ \p ->
     let (env,heap) = materialiseState p
      in case Map.lookup n env of
@@ -150,31 +151,49 @@ maxinf le = askP $ \p -> case le.thing of
   Lam n le' -> D $ \p ->
     let (env,_) = materialiseState p
         val = Fun (n,le'.at,env,maxinf le')
-     in ConsT le.at (ValA val) (End le.after)
+     in ConsT le.at (ValA val) (End daggerLabel)
   Let n le1 le2 -> D $ \p ->
     let a = hash p
-        d = cons (LookupA a) le1.at (snoc (memo a (maxinf le1)) (UpdateA a))
+        d = cons (LookupA a) le1.at (snoc (memo a (maxinf le1)) daggerLabel (UpdateA a))
      in unD (cons (BindA n a d) le2.at (maxinf le2)) p
   where
     lookup :: Ord a => a -> (a :-> Addr) -> (Addr :-> (Env,D)) -> (Env,D)
     lookup x env heap = Map.lookup x env >>= (heap Map.!?) `orElse` (Map.empty, botD)
 
 materialiseState :: Trace D -> (Env, Heap)
-materialiseState = go [] (Map.empty, Map.empty) . consifyT
+materialiseState = go (Map.empty, Map.empty) . consifyT
   where
-    go :: [Env] -> (Env, Heap) -> Trace D -> (Env, Heap)
-    go stk s             (End l)       = s
-    go stk s@(env, heap) (ConsT l a t) = case a of
-      ValA{} -> go stk s t
+    go :: (Env, Heap) -> Trace D -> (Env, Heap)
+    go s             (End l)       = s
+    go s@(env, heap) (ConsT l a t) = case a of
+      ValA{} -> go s t
       BindA n a d | let !env' = Map.insert n a env
-        -> go stk (env', Map.insert a (env',d) heap) t
-      LookupA a | Just (env',_d) <- Map.lookup a heap -> go (env:stk) (env',heap) t
-      App1A _ -> go (env:stk) s t
-      UpdateA a | env':stk' <- stk -> (env', heap)
+        -> go (env', Map.insert a (env',d) heap) t
+      LookupA a | Just (env',_d) <- Map.lookup a heap -> go (env',heap) t
+      App1A _ -> go s t
+      UpdateA a -> go s t
         -- The d stored in the heap is still accurate
         -- as it looks for Update actions in the init
-        -- trace
-      App2A n a | env':stk' <- stk -> (Map.insert n a env', heap)
+        -- trace. Theoretically, we could attach a d
+        -- to Update actions, though...
+      App2A n a -> go (Map.insert n a env, heap) t
+
+--materialiseState :: Trace D -> (Env, Heap)
+--materialiseState = go [] (Map.empty, Map.empty) . consifyT
+--  where
+--    go :: Maybe (Value D) -> [Env] -> (Env, Heap) -> Trace D -> (Env, Heap)
+--    go mb_val stk s             (End l)       = s
+--    go mb_val stk s@(env, heap) (ConsT l a t) = case a of
+--      ValA val -> go (Just val) stk s t
+--      BindA n a d | let !env' = Map.insert n a env
+--        -> go Nothing stk (env', Map.insert a (env',d) heap) t
+--      LookupA a | Just (env',_d) <- Map.lookup a heap -> go mb_val (env:stk) (env',heap) t
+--      App1A _ -> go Nothing (env:stk) s t
+--      UpdateA a | env':stk' <- stk -> (env', heap)
+--        -- The d stored in the heap is still accurate
+--        -- as it looks for Update actions in the init
+--        -- trace
+--      App2A n a | _:stk' <- stk, Just (Fun (n,l,env',d)) <- mb_val -> (Map.insert n a env', heap)
 
 -- Stateful semantics, Mk II:
 -- Add layer of indirection for *all* Ds, put D in the cache, which is now a heap
