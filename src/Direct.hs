@@ -132,10 +132,12 @@ maxinf le env p
       Var n -> env !⊥ n
       App le n -> D $ \p ->
         let p2 = unD (cons (App1A n) le.at (go le env)) p
-         in concatT p2 $ case val p2 of
-              Just (Fun f) -> unD (f (env !⊥ n)) (concatT p p2)
+         in case Map.lookup n env of
+             Just d -> concatT p2 $ case val p2 of
+              Just (Fun f) -> unD (f d) (concatT p p2)
               Nothing      -> unD botD (concatT p p2) -- Stuck! Can happen in an open program
                                                       -- Or with data types
+             Nothing -> unD botD p
       Lam n le' ->
         let val = Fun (\d -> cons (App2A n d) (le'.at) (go le' (Map.insert n d env)))
          in D $ \_ -> ConsT le.at (ValA val) (End le.after)

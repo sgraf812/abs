@@ -12,7 +12,7 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
-module Stateless (D(..), Value(..), maxinf, maxinfD, absS, snoc) where
+module Stateless (D(..), Value(..), maxinf', maxinf, absS, snoc) where
 
 import Control.Applicative
 import Control.Monad
@@ -37,7 +37,7 @@ orElse = flip fromMaybe
 infixl 1 `orElse`
 
 type instance AddrOrD D = Addr
-data instance Value D = Fun D
+newtype instance Value D = Fun (Name,Label,Env,D)
 
 instance Show (Value D) where
   show (Fun _) = "fun"
@@ -120,35 +120,44 @@ memo a sem = D $ \pi -> case lookup a (consifyT pi) of
 type Env = Name :-> Addr
 type Heap = Addr :-> (Env, D)
 
-maxinfD :: LExpr -> (Name :-> D) -> D
-maxinfD le env = D (maxinf le env)
+(>.>) :: D -> D -> D
+D d1 >.> D d2 = D $ \p -> let p1 = d1 p in p1 `concatT` d2 (p `concatT` p1)
 
-maxinf :: LExpr -> Trace D -> Trace D
-maxinf le p
-  | dst p /= le.at = unD botD p
-  | otherwise      = unD (go le) p
+askP :: (Trace D -> D) -> D
+askP f = D $ \p -> unD (f p) p
+
+maxinf' :: LExpr -> Trace D
+maxinf' le = unD (maxinf le) (End le.at)
+
+maxinf :: LExpr -> D
+maxinf le = askP $ \p -> case le.thing of
+  _ | dst p /= le.at -> botD
+  Var n ->
+    let (env,heap) = materialiseState p
+        (env',d) = lookup n env heap
+     in d
+  App le n -> D $ \p ->
+    let (env,heap) = materialiseState p
+     in case Map.lookup n env of
+       Just a ->
+        let p2 = unD (cons (App1A n) le.at (maxinf le)) p
+            p2' = concatT p p2
+         in concatT p2 $ case val p2' of
+              Just (Fun (x,l,env',f)) -> unD (cons (App2A x a) l f) p2'
+              Nothing      -> unD botD p2' -- Stuck! Can happen in an open program
+                                           -- Or with data types
+       Nothing -> unD botD p
+  Lam n le' -> D $ \p ->
+    let (env,_) = materialiseState p
+        val = Fun (n,le'.at,env,maxinf le')
+     in ConsT le.at (ValA val) (End le.after)
+  Let n le1 le2 -> D $ \p ->
+    let a = hash p
+        d = cons (LookupA a) le1.at (snoc (memo a (maxinf le1)) (UpdateA a))
+     in unD (cons (BindA n a d) le2.at (maxinf le2)) p
   where
-    go :: LExpr -> D
-    go le = case le.thing of
-      Var n -> D $ \p ->
-        let (env,heap) = materialiseState p
-         in env !⊥ n
-      App le n -> D $ \p ->
-        let p2 = unD (cons (App1A n) le.at (go le env)) p
-         in concatT p2 $ case val p2 of
-              Just (Fun f) -> unD (f (env !⊥ n)) (concatT p p2)
-              Nothing      -> unD botD (concatT p p2) -- Stuck! Can happen in an open program
-                                                      -- Or with data types
-      Lam n le' ->
-        let val = Fun (\d -> cons (App2A n d) (le'.at) (go le' (Map.insert n d env)))
-         in D $ \_ -> ConsT le.at (ValA val) (End le.after)
-      Let n le1 le2 -> D $ \p ->
-        let a = hash p
-            d = cons (LookupA a) le1.at (snoc (memo a (go le1 env')) (UpdateA a))
-            env' = Map.insert n d env
-         in unD (cons (BindA n a d) le2.at (go le2 env')) p
-    lookup :: Ord a => a -> (a :-> Addr) -> (Addr :-> D) -> D
-    lookup x env heap = Map.lookup x env >>= (heap Map.!?) `orElse` botD
+    lookup :: Ord a => a -> (a :-> Addr) -> (Addr :-> (Env,D)) -> (Env,D)
+    lookup x env heap = Map.lookup x env >>= (heap Map.!?) `orElse` (Map.empty, botD)
 
 materialiseState :: Trace D -> (Env, Heap)
 materialiseState = go [] (Map.empty, Map.empty) . consifyT
@@ -159,7 +168,7 @@ materialiseState = go [] (Map.empty, Map.empty) . consifyT
       ValA{} -> go stk s t
       BindA n a d | let !env' = Map.insert n a env
         -> go stk (env', Map.insert a (env',d) heap) t
-      LookupA _ -> go (env:stk) s t
+      LookupA a | Just (env',_d) <- Map.lookup a heap -> go (env:stk) (env',heap) t
       App1A _ -> go (env:stk) s t
       UpdateA a | env':stk' <- stk -> (env', heap)
         -- The d stored in the heap is still accurate
@@ -247,7 +256,7 @@ absS p = map (go . snocifyT) (prefs (traceShowId p))
 -- | Derive the pointwise prefix trace semantics from a maximal and inifinite
 -- trace semantics (Section 6.12 of POAI).
 pointwise :: LExpr -> Trace D -> Label -> [Trace D]
-pointwise e p l = map (concatT p) $ tracesAt l $ maxinf e Map.empty p
+pointwise e p l = map (concatT p) $ tracesAt l $ unD (maxinf e) p
 
 -- post(go le []) will be the reachability semantics, e.g., small-step!
 -- Wart: Instead of a (set of) Trace `t`, it should take a (set of) Configuration `c`
@@ -262,7 +271,7 @@ post e p l = map (ByNeed.config (unlabel e)) (pointwise e p l)
 
 absD :: Label -> D -> ByNeed.D
 absD l (D d) = case val (d (End l)) of
-  Just (Fun f) -> ByNeed.DFun' (absD l . f . concD l)
+  --Just (Fun f) -> ByNeed.DFun' (absD l . f . concD l)
   Nothing      -> ByNeed.DBot'
 
 concD :: Label -> ByNeed.D -> D

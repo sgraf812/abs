@@ -95,10 +95,13 @@ maxinf le env p
     go le !env = case le.thing of
       Var n -> env !⊥ n
       App le n ->
-        let apply = askP $ \p -> case val p of
-              Just (CFun f) -> f (env !⊥ n)
-              Nothing      -> botC
-         in step (App1A n) le.at <++> go le env <++> apply
+        case Map.lookup n env of
+          Just d ->
+            let apply = askP $ \p -> case val p of
+                  Just (CFun f) -> f d
+                  Nothing      -> botC
+             in step (App1A n) le.at <++> go le env <++> apply
+          Nothing -> botC
       Lam n le' ->
         let val = CFun (\c -> App2A n c >-> le'.at <++> go le' (Map.insert n c env))
          in step (ValA val) le.after

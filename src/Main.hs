@@ -28,6 +28,7 @@ import qualified Stateful
 import Expr
 import Text.Show (showListWith)
 import qualified Data.List.NonEmpty as NE
+import qualified Stateless
 
 x, y, z, a, b, c, d, e, f, i, t :: Expr
 x : y : z : a : b : c : d : e : f : i : t : _ = map (Fix . Var . (: [])) "xyzabcdefit"
@@ -81,7 +82,7 @@ e_W = label $ let_ "y" (lam "x" (app x "x")) (app y "y")
 -- >>> takeT 10 $ Direct.maxinf e_2 Map.empty (End (at e_2))
 -- [1]-bind->[5]-app1->[6]-app1->[7]-look([1]_0)->[2]-val(fun)->[4]-app2->[3]-look([1]_0)->[2]-val(fun)->[4]-app2->[3]-look([1]_0)->[2]
 main :: IO ()
-main = forM_ [(10,e_1), (10,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_W), (10,e_bool), (50,e_fresh), (50,e_abs)] $ \(n,e) -> do
+main = forM_ [(10,e_1), (10,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_W), (10,e_bool), (50,e_fresh), (50,e_abs), (4,label $ read "a a")] $ \(n,e) -> do
 -- main = forM_ [e_1, e2, e_stuck] $ \e -> do
   putStrLn "============================="
   putStrLn ""
@@ -103,6 +104,9 @@ main = forM_ [(10,e_1), (10,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_W), (
   putStrLn "stateful trace semantics"
   mapM_ print $ take n $ NE.toList $ Stateful.stateful e
   putStrLn "-----------------------------"
+  putStrLn "maximal and infinite trace, stateless"
+  print $ takeT n $ Stateless.maxinf' e
+  putStrLn "-----------------------------"
 --  putStrLn "tracesAt 2"
 --  mapM_ print $ tracesAt 2 $ takeT 10 $ Direct.maxinf e Map.empty (End (at e))
   putStrLn "defnSmallStep (derived from maximal trace)"
@@ -117,8 +121,8 @@ main = forM_ [(10,e_1), (10,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_W), (
 --  putStrLn "splitBalancedPrefix"
 --  forM_ [20,19..0] $ \m -> print $ fmap fst $ splitBalancedPrefix $ dropT m $ takeT n $ Direct.maxinf e Map.empty (End (at e))
 
-  putStrLn "absS"
-  mapM_ print $ Direct.absS $ takeT (n-1) $ Direct.maxinf e Map.empty (End (at e))
+--  putStrLn "absS"
+--  mapM_ print $ Stateless.absS $ takeT (n-1) $ Stateless.maxinf e Map.empty (End (at e))
 
   putStr "dead: "
   print $ Set.difference (letBoundVars (unlabel e)) $ absL Set.empty $ takeT (n-1) $ Direct.maxinf e Map.empty (End (at e))
