@@ -117,7 +117,7 @@ memo a sem = askP $ \pi -> case update a (snocifyT pi) of
     update _ End{} = Nothing
 
 type Env = Name :-> Addr
-type Heap = Addr :-> (Env, D)
+type Heap = Addr :-> (Label, Env, D)
 
 (>.>) :: D -> D -> D
 D d1 >.> D d2 = D $ \p -> let p1 = d1 p in p1 `concatT` d2 (p `concatT` p1)
@@ -131,11 +131,12 @@ maxinf' le = unD (maxinf le) (End le.at)
 maxinf :: LExpr -> D
 maxinf le = askP $ \p -> case le.thing of
   _ | dst p /= le.at -> botD
-  Var n ->
-    let (env,heap) = materialiseState p
-        (env',d) = lookup n env heap
-     in -- trace (n ++ " " ++ showLabel le.at ++ " " ++ show env ++ " " ++ show heap ++ " " ++ show p)
-        d
+  Var n | let (env,heap) = materialiseState p ->
+    case Map.lookup n env of
+      Just a | let Just (l,env',d) = Map.lookup a heap ->
+        -- trace (n ++ " " ++ showLabel le.at ++ " " ++ show env ++ " " ++ show heap ++ " " ++ show p)
+        cons (LookupA a) l (snoc d daggerLabel (Update a))
+      Nothing -> botD
   App le n -> D $ \p ->
     let (env,heap) = materialiseState p
      in case Map.lookup n env of
@@ -153,11 +154,11 @@ maxinf le = askP $ \p -> case le.thing of
      in ConsT le.at (ValA val) (End daggerLabel)
   Let n le1 le2 -> D $ \p ->
     let a = hash' p
-        d = cons (LookupA a) le1.at (snoc (memo a (maxinf le1)) daggerLabel (UpdateA a))
+        d = memo a (maxinf le1)
      in unD (cons (BindA n a d) le2.at (maxinf le2)) p
   where
-    lookup :: Ord a => a -> (a :-> Addr) -> (Addr :-> (Env,D)) -> (Env,D)
-    lookup x env heap = Map.lookup x env >>= (heap Map.!?) `orElse` (Map.empty, botD)
+    lookup :: Ord a => a -> (a :-> Addr) -> (Addr :-> (Label,Env,D)) -> (Label,Env,D)
+    lookup x env heap = Map.lookup x env >>= (heap Map.!?) `orElse` (-1,Map.empty, botD)
 
 hash' :: Trace D -> Addr
 hash' p = Map.size $ snd $ materialiseState p
@@ -169,7 +170,7 @@ materialiseState = go Nothing (Map.empty, Map.empty) . consifyT
     go _      s             (End l)       = s
     go mb_val s@(env, heap) (ConsT l a t) = case a of
       ValA val -> go (Just val) (Map.empty,heap) t
-      BindA n a d | let !env' = Map.insert n a env
+      BindA n a l d | let !env' = Map.insert n a env
         -> go Nothing (env', Map.insert a (env',d) heap) t
       LookupA a | Just (env',_d) <- Map.lookup a heap -> go Nothing (env',heap) t
       App1A     -> go Nothing s t
