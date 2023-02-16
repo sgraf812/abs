@@ -22,7 +22,7 @@ import           Expr hiding (assert)
 import           ByNeed
 import           Direct
 import qualified Cont
-import qualified Stateful
+import qualified CESK
 import qualified Data.List.NonEmpty as NE
 import qualified Stateless
 import Hedgehog.Range (constant)
@@ -105,12 +105,12 @@ prop_stateful_maxinf =
   property $ do
     e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
     let le = label e
-    let p1 = Stateful.stateful le
+    let p1 = CESK.run le
     let p2 = maxinf le Map.empty (End le.at)
     let p1' = NE.take (sizeFactor*100+1) p1
     let p2' = takeT (sizeFactor*100) p2
-    let ignoring_dagger (Stateful.Dagger,_,_,_) _ = True
-        ignoring_dagger (Stateful.E e,_,_,_)    l = e.at == l
+    let ignoring_dagger (CESK.Dagger,_,_,_) _ = True
+        ignoring_dagger (CESK.E e,_,_,_)    l = e.at == l
     diff p1' (\a b -> length a == length b && and (zipWith ignoring_dagger a b)) (NE.toList $ traceLabels p2')
 
 prop_stateless_maxinf =
@@ -155,7 +155,7 @@ prop_stateful_materialisable_from_stateless =
     e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
     n <- forAll (int (constant 1 (sizeFactor*40)))
     let le = label e
-    let ful  = map dropStuffStateful $ NE.take n $ Stateful.straceMemory $ Stateful.stateful le
+    let ful  = map dropStuffStateful $ NE.take n $ CESK.traceMemory $ CESK.run le
     let less = map dropStuffStateless $ NE.take n $ Stateless.traceStates $ Stateless.maxinf' le
     let eq_state (fullenv, fullheap) (lessenv, lessheap) =
           fullenv == lessenv &&

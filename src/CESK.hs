@@ -10,7 +10,7 @@
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE PatternSynonyms #-}
 
-module Stateful (D(..), DExpr(..), STrace, straceLabels, straceMemory, stateful, statefulD) where
+module CESK (D(..), DExpr(..), Trace, traceLabels, traceMemory, run, runD) where
 
 import Control.Applicative
 import Control.Monad
@@ -24,7 +24,7 @@ import qualified Data.Set as Set
 import Debug.Trace
 import Text.Show (showListWith)
 
-import Expr hiding (Fun)
+import Expr hiding (Fun, Trace, traceLabels)
 import qualified ByNeed
 import Data.Void
 import Data.Bifunctor
@@ -54,19 +54,19 @@ data Frame
   | Update Addr
   deriving Show
 
-newtype D = D { unD :: State -> STrace }
+newtype D = D { unD :: State -> Trace }
 data SValue = Fun D deriving Show
 
-type STrace = NonEmpty State
+type Trace = NonEmpty State
 
-straceLabels :: STrace -> NonEmpty Label
-straceLabels = fmap go
+traceLabels :: Trace -> NonEmpty Label
+traceLabels = fmap go
   where
     go (Dagger,_,_,_) = daggerLabel
     go (E le,_,_,_)   = le.at
 
-straceMemory :: STrace -> NonEmpty (Env,Heap)
-straceMemory = fmap go
+traceMemory :: Trace -> NonEmpty (Env,Heap)
+traceMemory = fmap go
   where
     go (_,env,heap,_) = (env,heap)
 
@@ -74,7 +74,7 @@ instance Show DExpr where
   show Dagger = "‡"
   show (E e) = show e.at
 
-srcS, dstS :: STrace -> State
+srcS, dstS :: Trace -> State
 srcS = NE.head
 dstS = NE.last
 
@@ -93,10 +93,10 @@ instance Show D where
   show _ = "D"
 
 
-concatS :: STrace -> STrace -> STrace
+concatS :: Trace -> Trace -> Trace
 concatS (s NE.:| t1) t2 = s NE.:| con s t1 t2
   where
-    con :: State -> [State] -> STrace -> [State]
+    con :: State -> [State] -> Trace -> [State]
     con s@(e,_,_,_) []      ((e',_,_,_) NE.:| t2) = assert (eqLabel e e') t2
     con _           (s':t1) t2                    = s' : con s' t1 t2
 
@@ -119,11 +119,11 @@ step fun = D $ \s -> s NE.:| fun s
 (>.>) :: D -> D -> D
 D d1 >.> D d2 = D $ \s -> let p = d1 s in p `concatS` d2 (dstS p)
 
-stateful :: LExpr -> STrace
-stateful le = unD (statefulD le) (E le,Map.empty,Map.empty,[])
+run :: LExpr -> Trace
+run le = unD (runD le) (E le,Map.empty,Map.empty,[])
 
-statefulD :: LExpr -> D
-statefulD le = D $ \s -> case s of
+runD :: LExpr -> D
+runD le = D $ \s -> case s of
   (E le',_,_,_) | le.at /= le'.at -> unD botD s
   _                               -> unD (go le) s
   where

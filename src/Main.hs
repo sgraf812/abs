@@ -24,7 +24,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Debug.Trace
 import qualified Direct
-import qualified Stateful
+import qualified CESK
 import Expr
 import Text.Show (showListWith)
 import qualified Data.List.NonEmpty as NE
@@ -125,13 +125,13 @@ main = forM_ [(15,e_1), (15,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_W), (
   print cont
   putStrLn "-----------------------------"
   putStrLn "stateful trace semantics"
-  let stateful = NE.fromList $ NE.take (n+1) $ Stateful.stateful e
+  let stateful = NE.fromList $ NE.take (n+1) $ CESK.run e
   mapM_ print stateful
   putStrLn "-----------------------------"
   when (ss1 /= ss2) (error "smallstep /= defnSmallStep")
   when (ss1 /= ss3) (error "smallstep /= absSmallStep")
   when (traceLabels maxinf /= traceLabels stateless) (error "maxinf /= stateless")
-  when (traceLabels maxinf /= Stateful.straceLabels stateful) (error "maxinf /= stateful")
+  when (traceLabels maxinf /= CESK.traceLabels stateful) (error "maxinf /= stateful")
 
 --  putStrLn "tracesAt 2"
 --  mapM_ print $ tracesAt 2 $ takeT 10 $ Direct.maxinf e Map.empty (End (at e))

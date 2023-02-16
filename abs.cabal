@@ -33,7 +33,7 @@ library
         ByNeed
         Cont
         Direct
-        Stateful
+        CESK
         Stateless
         Expr
         Main
