@@ -10,8 +10,7 @@
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE PatternSynonyms #-}
 
-module Stateful (D(..), DExpr(..), Env, PHeap, PSValue(..), PCont, PFrame(..), STrace,
-                 straceLabels, straceMemory, stateful, statefulD) where
+module Stateful (D(..), DExpr(..), STrace, straceLabels, straceMemory, stateful, statefulD) where
 
 import Control.Applicative
 import Control.Monad
@@ -45,25 +44,18 @@ isVal :: LExpr -> Bool
 isVal LLam{} = True
 isVal _      = False
 
-type PState d = (DExpr, Env, PHeap d, PCont d)
+type State = (DExpr, Env, Heap, Cont)
 type Env = Name :-> Addr
-type PHeap d = Addr :-> (LExpr, Env, d)
-type PCont d = [PFrame d]
-data PFrame d
-  = Return (Val, Env, PSValue d)
+type Heap = Addr :-> (LExpr, Env, D)
+type Cont = [Frame]
+data Frame
+  = Return (Val, Env, SValue)
   | Apply Addr
   | Update Addr
   deriving Show
 
-data PSValue d = Fun d deriving Show
-
-type State = PState D
-type Heap = PHeap D
-type Cont = PCont D
-type Frame = PFrame D
-type SValue = PSValue D
-
 newtype D = D { unD :: State -> STrace }
+data SValue = Fun D deriving Show
 
 type STrace = NonEmpty State
 

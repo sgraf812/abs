@@ -28,25 +28,19 @@ import Debug.Trace
 import Text.Show (showListWith)
 
 import Expr
-import Stateful (Env,PHeap,PCont,PFrame(..),PSValue(..))
-import qualified Stateful
+import qualified ByNeed
 import Data.Void
 import Data.Bifunctor
 import Data.List.NonEmpty (NonEmpty)
-
-type Heap = PHeap D
-type Cont = PCont D
-type Frame = PFrame D
-type SValue = PSValue D
 
 orElse = flip fromMaybe
 infixl 1 `orElse`
 
 type instance AddrOrD D = Addr
-newtype instance Value D = SValue SValue
+newtype instance Value D = Fun (Name,Label,Env,D)
 
 instance Show (Value D) where
-  show (SValue v) = show v
+  show (Fun _) = "fun"
 
 instance Eq (Value D) where
   _ == _ = True
@@ -122,6 +116,9 @@ memo a sem = askP $ \pi -> case update a (snocifyT pi) of
       | otherwise     = update addr pi'
     update _ End{} = Nothing
 
+type Env = Name :-> Addr
+type Heap = Addr :-> (Label, Env, D)
+
 (>.>) :: D -> D -> D
 D d1 >.> D d2 = D $ \p -> let p1 = d1 p in p1 `concatT` d2 (p `concatT` p1)
 
@@ -134,25 +131,25 @@ maxinf' le = unD (maxinf le) (End le.at)
 maxinf :: LExpr -> D
 maxinf le = askP $ \p -> case le.thing of
   _ | dst p /= le.at -> botD
-  Var n | let (env,heap,_cont) = materialiseState p ->
+  Var n | let (env,heap) = materialiseState p ->
     case Map.lookup n env of
-      Just a | let Just (e,env',d) = Map.lookup a heap ->
+      Just a | let Just (l,env',d) = Map.lookup a heap ->
         -- trace (n ++ " " ++ showLabel le.at ++ " " ++ show env ++ " " ++ show heap ++ " " ++ show p)
-        cons (LookupA a) e.at (snoc d daggerLabel (Update a))
+        cons (LookupA a) l (snoc d daggerLabel (Update a))
       Nothing -> botD
   App le n -> D $ \p ->
-    let (env,heap,_cont) = materialiseState p
+    let (env,heap) = materialiseState p
      in case Map.lookup n env of
        Just a ->
         let p2 = unD (cons App1A le.at (maxinf le)) p
             p2' = concatT p p2
          in concatT p2 $ case val p2' of
-              Just (SValue (Fun x,l,env',f)) -> unD (cons (App2A x a) l f) p2'
+              Just (Fun (x,l,env',f)) -> unD (cons (App2A x a) l f) p2'
               Nothing      -> unD botD p2' -- Stuck! Can happen in an open program
                                            -- Or with data types
        Nothing -> unD botD p
   Lam n le' -> D $ \p ->
-    let (env,_,_) = materialiseState p
+    let (env,_) = materialiseState p
         val = Fun (n,le'.at,env,maxinf le')
      in ConsT le.at (ValA val) (End daggerLabel)
   Let n le1 le2 -> D $ \p ->
@@ -166,14 +163,14 @@ maxinf le = askP $ \p -> case le.thing of
 hash' :: Trace D -> Addr
 hash' p = Map.size $ snd $ materialiseState p
 
-materialiseState :: Trace D -> (Env, Heap, Cont)
+materialiseState :: Trace D -> (Env, Heap)
 materialiseState = go Nothing (Map.empty, Map.empty) . consifyT
   where
     go :: Maybe (Value D) -> (Env, Heap) -> Trace D -> (Env, Heap)
     go _      s             (End l)       = s
     go mb_val s@(env, heap) (ConsT l a t) = case a of
       ValA val -> go (Just val) (Map.empty,heap) t
-      BindA n a d | let !env' = Map.insert n a env
+      BindA n a l d | let !env' = Map.insert n a env
         -> go Nothing (env', Map.insert a (env',d) heap) t
       LookupA a | Just (env',_d) <- Map.lookup a heap -> go Nothing (env',heap) t
       App1A     -> go Nothing s t
@@ -191,3 +188,16 @@ materialiseState = go Nothing (Map.empty, Map.empty) . consifyT
 
 traceStates :: Trace D -> NonEmpty (Env, Heap)
 traceStates p = materialiseState <$> prefs p
+
+absD :: Label -> D -> ByNeed.D
+absD l (D d) = case val (d (End l)) of
+  --Just (Fun f) -> ByNeed.DFun' (absD l . f . concD l)
+  Nothing      -> ByNeed.DBot'
+
+concD :: Label -> ByNeed.D -> D
+concD l ByNeed.DBot'     = botD
+concD l (ByNeed.DFun' f) = undefined -- ⊔{ d | absD l d = V (Fun f) }
+ -- Huh, concD is nto well-defined, because those ds might not form a chain.
+ -- Ah, but that is just a result of the domain no longer being singleton traces {{π}}.
+ -- In the proper powerset lattice we should be fine.
+ -- I think we might need to start from the abstract interpreter.
