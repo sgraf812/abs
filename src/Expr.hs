@@ -226,16 +226,6 @@ data Action d
   | LookupA !Addr
   | UpdateA !Addr
 
--- | only compare non-d stuff
-instance Eq (Action d) where
-  ValA _ == ValA _ = True
-  App1A == App1A = True
-  App2A n1 _d1 == App2A n2 _d2 = n1 == n2
-  BindA n1 a1 _d1 == BindA n2 a2 _d2 = a1 == a2 && n1 == n2
-  LookupA a1 == LookupA a2 = a1 == a2
-  UpdateA a1 == UpdateA a2 = a1 == a2
-  _ == _ = False
-
 instance Show d => Show (Action d) where
   show (ValA v) = "val"
   show (LookupA a) = "look(" ++ show a ++ ")"
@@ -248,7 +238,6 @@ data Trace d
   = End !Label
   | ConsT !Label !(Action d) (Trace d)
   | SnocT (Trace d) !(Action d) Label
-  deriving Eq
 
 -- think of type Trace = Nu TraceF; e.g., greatest fixed-point, to allow
 -- infinite traces Haskell data types are greatest fixed-points
@@ -429,7 +418,7 @@ splitBalancedPrefix p = -- traceIt (\(r,_)->"split" ++ "\n"  ++ show (takeT 3 p)
 -- | Loop indefinitely for infinite traces!
 isBalanced :: Show d => Trace d -> Bool
 isBalanced p = case splitBalancedPrefix p of
-  (p', Just (End l)) | l == dst p -> p' == p
+  (p', Just (End l)) | l == dst p -> sameLabelsInTrace p' p
   _                               -> False
 
 data Lifted a = Lifted !a
