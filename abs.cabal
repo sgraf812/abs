@@ -34,7 +34,7 @@ library
         Cont
         Direct
         CESK
-        Stateless
+        FunnyStateless
         Expr
         Main
         Gen

@@ -12,7 +12,28 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
-module Stateless (D(..), Value(..), maxinf', maxinf, traceStates) where
+-- | Although this semantics might seem like it is the stateless semantics
+-- associated to CESK, strictly speaking it is not. Note that the Heap contains
+-- a D that does Lookup and Update transitions, while the Heap in the CESK
+-- semantics does not.
+--
+-- I tried pushing the lookup and update transitions to the Var case, as for
+-- CESK. But that needs to store the start label alongside the expression
+-- bound in the heap, e.g., `Heap = Addr :-> (Label, Env, D)`, at which point
+-- we can just write `Heap = Addr :-> (LExpr, Env, D)` and we have the
+-- actual CESK heap (modulo abstraction of D). Then Update transitions must
+-- carry the D as well as the LExpr it denotes, perhaps even the Env.
+-- (We *could* recover those from the Value transition just before the Update,
+-- but then `materialiseState` would have to do non-trivial stuff wrapping
+-- a Fun value into a D (what `ret` does in CESK). I distate that; a disputable
+-- judgment call.)
+-- Similarly, Bind actions would need to carry the LEXpr and its denotation.
+--
+-- In short: This semantics was a useful experiment in that it embeds the
+-- environment as state, a truly stateless trace semantics. Other than that,
+-- it's neither /the/ stateless trace semantics associated to CESK nor is it
+-- as simple as (and as thus useful as) the "Direct" semantics.
+module FunnyStateless (D(..), Value(..), runInit, run, traceStates) where
 
 import Control.Applicative
 import Control.Monad
@@ -35,6 +56,9 @@ import Data.List.NonEmpty (NonEmpty)
 
 orElse = flip fromMaybe
 infixl 1 `orElse`
+
+type Env = Name :-> Addr
+type Heap = Addr :-> (Env, D)
 
 type instance AddrOrD D = Addr
 newtype instance Value D = Fun (Name,Label,Env,D)
@@ -116,20 +140,17 @@ memo a sem = askP $ \pi -> case update a (snocifyT pi) of
       | otherwise     = update addr pi'
     update _ End{} = Nothing
 
-type Env = Name :-> Addr
-type Heap = Addr :-> (Env, D)
-
 (>.>) :: D -> D -> D
 D d1 >.> D d2 = D $ \p -> let p1 = d1 p in p1 `concatT` d2 (p `concatT` p1)
 
 askP :: (Trace D -> D) -> D
 askP f = D $ \p -> unD (f p) p
 
-maxinf' :: LExpr -> Trace D
-maxinf' le = unD (maxinf le) (End le.at)
+runInit :: LExpr -> Trace D
+runInit le = unD (run le) (End le.at)
 
-maxinf :: LExpr -> D
-maxinf le = askP $ \p -> case le.thing of
+run :: LExpr -> D
+run le = askP $ \p -> case le.thing of
   _ | dst p /= le.at -> botD
   Var n ->
     let (env,heap) = materialiseState p
@@ -140,7 +161,7 @@ maxinf le = askP $ \p -> case le.thing of
     let (env,heap) = materialiseState p
      in case Map.lookup n env of
        Just a ->
-        let p2 = unD (cons App1A le.at (maxinf le)) p
+        let p2 = unD (cons App1A le.at (run le)) p
             p2' = concatT p p2
          in concatT p2 $ case val p2' of
               Just (Fun (x,l,env',f)) -> unD (cons (App2A x a) l f) p2'
@@ -149,12 +170,12 @@ maxinf le = askP $ \p -> case le.thing of
        Nothing -> unD botD p
   Lam n le' -> D $ \p ->
     let (env,_) = materialiseState p
-        val = Fun (n,le'.at,env,maxinf le')
+        val = Fun (n,le'.at,env,run le')
      in ConsT le.at (ValA val) (End daggerLabel)
   Let n le1 le2 -> D $ \p ->
     let a = hash' p
-        d = cons (LookupA a) le1.at (snoc (memo a (maxinf le1)) daggerLabel (UpdateA a))
-     in unD (cons (BindA n a d) le2.at (maxinf le2)) p
+        d = cons (LookupA a) le1.at (snoc (memo a (run le1)) daggerLabel (UpdateA a))
+     in unD (cons (BindA n a d) le2.at (run le2)) p
   where
     lookup :: Ord a => a -> (a :-> Addr) -> (Addr :-> (Env,D)) -> (Env,D)
     lookup x env heap = Map.lookup x env >>= (heap Map.!?) `orElse` (Map.empty, botD)

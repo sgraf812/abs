@@ -24,7 +24,7 @@ import           Direct
 import qualified Cont
 import qualified CESK
 import qualified Data.List.NonEmpty as NE
-import qualified Stateless
+import qualified FunnyStateless
 import Hedgehog.Range (constant)
 
 
@@ -117,7 +117,7 @@ prop_stateless_maxinf =
   property $ do
     e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
     let le = label e
-    let p1 = Stateless.maxinf' le
+    let p1 = FunnyStateless.runInit le
     let p2 = maxinf le Map.empty (End le.at)
     let p1' = takeT (sizeFactor*100) p1
     let p2' = takeT (sizeFactor*100) p2
@@ -129,11 +129,11 @@ prop_stateless_split_prefix =
     e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
     n <- forAll (int (constant 1 (sizeFactor*20)))
     let le = label e
-    let p = Stateless.maxinf' le
+    let p = FunnyStateless.runInit le
     let pref = takeT n p
     when (dst pref == daggerLabel) discard -- indexAtLE doesn't work for daggerLabel
     let suff1 = dropT n p
-    let suff2 = Stateless.unD (Stateless.maxinf (indexAtLE (dst pref) le)) pref
+    let suff2 = FunnyStateless.unD (FunnyStateless.run (indexAtLE (dst pref) le)) pref
     let p1 = takeT (sizeFactor*40) suff1
     let p2 = takeT (sizeFactor*40) suff2
     let is_pref a b = NE.toList (traceLabels a) `NE.isPrefixOf` traceLabels b
@@ -144,8 +144,8 @@ eqListBy f []     []     = True
 eqListBy f (x:xs) (y:ys) = f x y && eqListBy f xs ys
 eqListBy _ _      _      = False
 
-dropStuffStateless :: (Name :-> Addr, Addr :-> (Name :-> Addr, a)) -> (Name :-> Addr, Addr :-> (Name :-> Addr))
-dropStuffStateless (env, heap) = (env, Map.map (\(env,_d) -> env) heap)
+dropStuffFunnyStateless :: (Name :-> Addr, Addr :-> (Name :-> Addr, a)) -> (Name :-> Addr, Addr :-> (Name :-> Addr))
+dropStuffFunnyStateless (env, heap) = (env, Map.map (\(env,_d) -> env) heap)
 
 dropStuffStateful :: (Name :-> Addr, Addr :-> (a, Name :-> Addr, b)) -> (Name :-> Addr, Addr :-> (Name :-> Addr))
 dropStuffStateful (env, heap) = (env, Map.map (\(_e,env,_d) -> env) heap)
@@ -156,7 +156,7 @@ prop_stateful_materialisable_from_stateless =
     n <- forAll (int (constant 1 (sizeFactor*40)))
     let le = label e
     let ful  = map dropStuffStateful $ NE.take n $ CESK.traceMemory $ CESK.run le
-    let less = map dropStuffStateless $ NE.take n $ Stateless.traceStates $ Stateless.maxinf' le
+    let less = map dropStuffFunnyStateless $ NE.take n $ FunnyStateless.traceStates $ FunnyStateless.runInit le
     let eq_state (fullenv, fullheap) (lessenv, lessheap) =
           fullenv == lessenv &&
           Map.map (\(_e,env,_d) -> env) fullheap == Map.map (\(env,_d) -> env) lessheap

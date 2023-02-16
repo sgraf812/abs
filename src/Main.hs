@@ -28,7 +28,7 @@ import qualified CESK
 import Expr
 import Text.Show (showListWith)
 import qualified Data.List.NonEmpty as NE
-import qualified Stateless
+import qualified FunnyStateless
 
 x, y, z, a, b, c, d, e, f, i, t :: Expr
 x : y : z : a : b : c : d : e : f : i : t : _ = map (Fix . Var . (: [])) "xyzabcdefit"
@@ -117,7 +117,7 @@ main = forM_ [(15,e_1), (15,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_W), (
   print maxinf
   putStrLn "-----------------------------"
   putStrLn "maximal and infinite trace, stateless"
-  let stateless = takeT n $ Stateless.maxinf' e
+  let stateless = takeT n $ FunnyStateless.runInit e
   print stateless
   putStrLn "-----------------------------"
   putStrLn "maximal and infinite trace continuation semantics"
@@ -140,7 +140,7 @@ main = forM_ [(15,e_1), (15,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_W), (
 --  forM_ [20,19..0] $ \m -> print $ fmap fst $ splitBalancedPrefix $ dropT m $ takeT n $ Direct.maxinf e Map.empty (End (at e))
 
 --  putStrLn "absS"
---  mapM_ print $ Stateless.absS $ takeT (n-1) $ Stateless.maxinf e Map.empty (End (at e))
+--  mapM_ print $ FunnyStateless.absS $ takeT (n-1) $ FunnyStateless.maxinf e Map.empty (End (at e))
 
   putStr "dead: "
   print $ Set.difference (letBoundVars (unlabel e)) $ absL Set.empty $ takeT (n-1) $ Direct.maxinf e Map.empty (End (at e))
