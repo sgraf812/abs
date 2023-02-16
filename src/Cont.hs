@@ -103,7 +103,7 @@ maxinf le env p
             let apply = askP $ \p -> case val p of
                   Just (CFun f) -> f d
                   Nothing      -> botC
-             in step (App1A n) le.at <++> go le env <++> apply
+             in step App1A le.at <++> go le env <++> apply
           Nothing -> botC
       Lam n le' ->
         let val = CFun (\c -> App2A n c >-> le'.at <++> go le' (Map.insert n c env))
@@ -201,7 +201,7 @@ dimapTrace to from (ConsT l a t) = ConsT l (dimapAction to from a) (dimapTrace t
 dimapTrace to from (SnocT t a l) = SnocT (dimapTrace to from t) (dimapAction to from a) l
 
 dimapAction :: Dimappable d1 d2 => (d1 -> d2) -> (d2 -> d1) -> Action d1 -> Action d2
-dimapAction to from (App1A n)     = App1A n
+dimapAction to from App1A         = App1A
 dimapAction to from (ValA v)      = ValA (dimapValue to from v)
 dimapAction to from (App2A n a)   = App2A n (to a)
 dimapAction to from (BindA n a d) = BindA n a (to d)

@@ -220,8 +220,8 @@ data family Value d
 
 data Action d
   = ValA !(Value d)
-  | App1A !Name
-  | App2A !Name !(AddrOrD d)
+  | App1A
+  | App2A !Name !(AddrOrD d) -- The Name is entirely optional and redundant with the Fun Value
   | BindA !Name !Addr !d
   | LookupA !Addr
   | UpdateA !Addr
@@ -229,7 +229,7 @@ data Action d
 -- | only compare non-d stuff
 instance Eq (Action d) where
   ValA _ == ValA _ = True
-  App1A n1 == App1A n2 = n1 == n2
+  App1A == App1A = True
   App2A n1 _d1 == App2A n2 _d2 = n1 == n2
   BindA n1 a1 _d1 == BindA n2 a2 _d2 = a1 == a2 && n1 == n2
   LookupA a1 == LookupA a2 = a1 == a2
@@ -240,7 +240,7 @@ instance Show d => Show (Action d) where
   show (ValA v) = "val"
   show (LookupA a) = "look(" ++ show a ++ ")"
   show (UpdateA a) = "upd(" ++ show a ++ ")"
-  show (App1A _) = "app1"
+  show (App1A) = "app1"
   show (App2A n a) = "app2(" ++ n ++ ")"
   show (BindA n a _) = "bind(" ++ n ++ "↦" ++ show a ++ ")"
 
@@ -319,11 +319,11 @@ valT t = go (snocifyT t)
     go (End _) = Nothing
     go (SnocT t a l) = case a of
       ValA _    -> Just (ConsT (dst t) a (End l))
-      App1A _   -> Nothing
+      App1A{}   -> Nothing
       App2A _ _ -> Nothing
       BindA {}  -> Nothing
       LookupA _ -> Nothing
-      UpdateA _ -> go t
+      UpdateA{} -> go t
     go ConsT {} = error "invalid"
 
 val :: Trace d -> Maybe (Value d)
@@ -332,6 +332,7 @@ val t = go <$> valT t
     go (ConsT _ (ValA val) _) = val
 
 type (:->) = Map
+infixr :->
 
 tracesAt :: Label -> Trace d -> [Trace d]
 tracesAt l t = case t of
@@ -339,14 +340,19 @@ tracesAt l t = case t of
   ConsT l' a t' -> [End l' | l == l'] ++ map (ConsT l' a) (tracesAt l t')
   SnocT t' a l' -> tracesAt l t' ++ [SnocT t' a l' | l' == l]
 
+-- | Derive the pointwise prefix trace semantics from a maximal and inifinite
+-- trace semantics (Section 6.12 of POAI).
+pointwise :: (LExpr -> Trace d -> Trace d) -> LExpr -> Trace d -> Label -> [Trace d]
+pointwise sem e p l = map (concatT p) $ tracesAt l $ sem e p
+
 -- | Turns a maximal finite or infinite trace into the list of its prefix
 -- traces. The list is finite iff the incoming trace is.
-prefs :: Trace d -> [Trace d]
+prefs :: Trace d -> NonEmpty (Trace d)
 prefs t = go (consifyT t)
   where
     go t = case t of
-      End l -> [t]
-      ConsT l a t' -> End l : map (ConsT l a) (go t')
+      End l -> NE.singleton t
+      ConsT l a t' -> End l `NE.cons` fmap (ConsT l a) (go t')
       SnocT{} -> undefined
 
 traceLabels :: Trace d -> NonEmpty Label
@@ -397,10 +403,10 @@ splitBalancedPrefix p = -- traceIt (\(r,_)->"split" ++ "\n"  ++ show (takeT 3 p)
     work p'@(ConsT l a p) = case a of
       ValA _ -> (ConsT l a (End (src p)), Just p) -- balanced
       BindA{}   -> first (ConsT l a) (work p)
-      App1A n ->
+      App1A{} ->
         -- we have to be extremely careful not to force mp2 too early
         let (p1, mp2) = work p
-            pref = ConsT l (App1A n) p1
+            pref = ConsT l App1A p1
             (suff, mp') = case mp2 of
               Just (ConsT l2 (App2A n d) p2) ->
                 let (p3, mp4) = work p2
@@ -418,7 +424,7 @@ splitBalancedPrefix p = -- traceIt (\(r,_)->"split" ++ "\n"  ++ show (takeT 3 p)
               _ -> (End (dst p1), Nothing)
          in (pref `concatT` suff,mp')
       App2A _ _ -> (p',Nothing) -- Not balanced; one closing parens too many
-      UpdateA _ -> (p',Nothing) -- Not balanced; one closing parens too many
+      UpdateA{} -> (p',Nothing) -- Not balanced; one closing parens too many
 
 -- | Loop indefinitely for infinite traces!
 isBalanced :: Show d => Trace d -> Bool

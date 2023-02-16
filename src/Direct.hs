@@ -12,7 +12,7 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
-module Direct (D(..), Value(..), maxinf, maxinfD, absS, snoc) where
+module Direct (D(..), Value(..), maxinf, maxinfD, snoc) where
 
 import Control.Applicative
 import Control.Monad
@@ -103,18 +103,17 @@ snoc :: D -> Label -> Action D -> D
 snoc sem l a = D $ \p -> let p' = (unD sem p) in p' `concatT` if dst p' /= l then End (dst p') else ConsT l a (End l)
 
 memo :: Addr -> D -> D
-memo a sem = D $ \pi -> case lookup a (consifyT pi) of
+memo a sem = D $ \pi -> case update a (snocifyT pi) of
   Just pv -> pv
   Nothing -> unD sem pi
   where
-    lookup pk (ConsT _ a pi')
-      | LookupA pk' <- a
-      , pk == pk'
-      , (pb, Just _) <- splitBalancedPrefix pi'
+    update addr (SnocT pi' a _)
+      | (UpdateA addr') <- a
+      , addr == addr'
       ---, trace ("found(" ++ show pk ++ "): " ++ show pb) True
-      = valT pb
-      | otherwise     = lookup pk pi'
-    lookup pk (End l) = Nothing
+      = valT pi'
+      | otherwise     = update addr pi'
+    update _ End{} = Nothing
 
 (!⊥) :: Ord a => (a :-> D) -> a -> D
 env !⊥ x = Map.findWithDefault botD x env
@@ -131,7 +130,7 @@ maxinf le env p
     go le !env = case le.thing of
       Var n -> env !⊥ n
       App le n -> D $ \p ->
-        let p2 = unD (cons (App1A n) le.at (go le env)) p
+        let p2 = unD (cons App1A le.at (go le env)) p
          in case Map.lookup n env of
              Just d -> concatT p2 $ case val p2 of
               Just (Fun f) -> unD (f d) (concatT p p2)
@@ -146,157 +145,6 @@ maxinf le env p
             d = cons (LookupA a) le1.at (snoc (memo a (go le1 env')) daggerLabel (UpdateA a))
             env' = Map.insert n d env
          in unD (cons (BindA n a d) le2.at (go le2 env')) p
-
--- Stateful semantics, Mk I:
---
---data ElabFrame d = Appl d | Upda !Addr deriving (Eq, Show)
---type ElabStack d = [ElabFrame d]
---
---type Configu = (Cache, Label, Name :-> D, ElabStack D)
---type Cache = Addr :-> (Label, Value D, Label)
---
----- | Abstraction function to stateful maximal trace semantics
---absS :: Trace D -> [Configu]
---absS p = map (go . snocifyT) (prefs (traceShowId p))
---  where
---    go :: Trace D -> Configu
---    go (End l) = (Map.empty, l, Map.empty, [])
---    go p0@(SnocT p a l) =
---      let (cache, _, _, s) = go p in
---      let env = varrho p0 in
---      case a of -- TODO: What if l /= l'?
---        ValA v -> (cache, l, env, s)
---        App1A n -> (cache, l, env, Appl (Map.findWithDefault botD n env):s)
---        App2A n _ | let (Appl d : s') = s -> (cache, l, env, s')
---        LookupA addr
---          | Just (l1,v,l2) <- Map.lookup addr cache -> assert (l == l1) (cache, l, env, Upda addr:s)
---          | otherwise -> (cache, l, env, Upda addr:s)
---        UpdateA addr
---          | let (Upda addr' : s') = s
---          -> assert (addr == addr') (updateCache cache addr' p, l, env, s')
---        BindA addr n d -> (cache, l, env, s)
---
---    varrho (End l) = Map.empty
---    varrho (SnocT p a _) = case a of
---      BindA addr n d -> Map.insert n d (varrho p)
---      App1A _ -> varrho p
---      App2A n d -> Map.insert n d (varrho (skipUpdates p))
---      LookupA addr -> varrho (defn addr p)
---      UpdateA addr -> varrho (skipLookup addr p)
---      ValA v -> varrho p
---
---    defn addr p@(SnocT _ (BindA addr' _ _) _) | addr == addr' = p
---    defn addr (SnocT p _ _) = defn addr p
---    defn addr (End _) = error $ "no defn " ++ show addr
---
---    skipLookup addr (SnocT p (LookupA addr') _) | addr == addr' = p
---    skipLookup addr (SnocT p _ _) = skipLookup addr p
---    skipLookup addr (End _) = error $ "no defn " ++ show addr
---
---    skipUpdates (SnocT p (UpdateA _) _) = skipUpdates p
---    skipUpdates p@(SnocT _ (ValA _) _) = p
---    skipUpdates p = error (show p)
---
---    unwindUntil pred p@(SnocT _ a _) | pred a = Just p
---    unwindUntil pred (SnocT p _ _) = unwindUntil pred p
---    unwindUntil pred (End _) = Nothing
---
---    updateCache cache addr (SnocT p UpdateA{} _) = updateCache cache addr p
---    updateCache cache addr (SnocT p (ValA v) l2) = Map.insert addr (dst p, v, l2) cache
---    updateCache cache addr p = error $ show cache ++ show addr ++ show p
-
--- Stateful semantics, Mk II:
--- Add layer of indirection for *all* Ds, put D in the cache, which is now a heap
--- Then represent heap entries by closures, Done! CESK/Sestoft Mk III
-data ElabFrame = Appl !Addr | Upda !Addr deriving (Eq, Show)
-type ElabStack = [ElabFrame]
-
-type Configu = (Addr:->D, Label, Name :-> Addr, ElabStack)
-
--- | Abstraction function to stateful maximal trace semantics
-absS :: Trace D -> [Configu]
-absS p = map (go . snocifyT) (prefs (traceShowId p))
-  where
-    go :: Trace D -> Configu
-    go (End l) = (Map.empty, l, Map.empty, [])
-    go p0@(SnocT p a l) =
-      let (_, _, _, s) = go p in
-      let env = varrho p0 in
-      let (_, heap) = varheap p0 in
-      case a of -- TODO: What if l /= l'?
-        ValA v -> (heap, l, env, s)
-        App1A n -> (heap, l, env, Appl (env Map.! n):s)
-        App2A n _ | let (Appl d : s') = s -> (heap, l, env, s')
-        LookupA addr -> (heap, l, env, Upda addr:s)
-        UpdateA addr
-          | let (Upda addr' : s') = s
-          -> assert (addr == addr') (updateHeap heap addr' p, l, env, s')
-        BindA n addr d -> (heap, l, env, s)
-
-    varrho (End l) = Map.empty
-    varrho (SnocT p a _) = case a of
-      BindA n addr d -> Map.insert n addr (varrho p)
-      App1A _ -> varrho p
-      App2A n d | SnocT p' (App1A n') _ <- skipApp1 p, let addr = varrho p' Map.! n' -> Map.insert n addr (varrho (skipUpdates p))
-      LookupA addr -> varrho (defn addr p)
-      UpdateA addr -> varrho (skipLookup addr p)
-      ValA v -> varrho p
-
-    defn addr p@(SnocT _ (BindA _ addr' _) _) | addr == addr' = p
-    defn addr (SnocT p _ _) = defn addr p
-    defn addr (End _) = error $ "no defn " ++ show addr
-
-    skipLookup addr (SnocT p (LookupA addr') _) | addr == addr' = p
-    skipLookup addr (SnocT p _ _) = skipLookup addr p
-    skipLookup addr (End _) = error $ "no defn " ++ show addr
-
-    skipUpdates (SnocT p (UpdateA _) _) = skipUpdates p
-    skipUpdates p@(SnocT _ (ValA _) _) = p
-    skipUpdates p = error (show p)
-
-    skipApp1 p0@(SnocT p a _) = case a of
-      App1A{} -> p0
-      UpdateA addr -> skipApp1 $ skipLookup addr p
-      App2A{} | (SnocT p' _ _) <- skipApp1 p -> skipApp1 p'
-      ValA{} -> skipApp1 p
-      LookupA{} -> error "what"
-      BindA{} -> skipApp1 p
-
-    unwindUntil pred p@(SnocT _ a _) | pred a = Just p
-    unwindUntil pred (SnocT p _ _) = unwindUntil pred p
-    unwindUntil pred (End _) = Nothing
-
-    varheap (End l) = (undefined, Map.empty)
-    varheap (SnocT p a l) =
-      let (d,heap') = varheap p in
-      case a of
-        ValA v -> (D $ const $ SnocT (End (dst p)) a l, heap')
-        UpdateA addr -> (d, Map.insert addr d heap')
-        BindA n addr d -> (undefined, Map.insert addr d heap')
-        LookupA addr -> (undefined, heap')
-        App1A _ -> (undefined, heap')
-        App2A{} -> (undefined, heap')
-
-    updateHeap heap addr (SnocT p UpdateA{} _) = updateHeap heap addr p
-    updateHeap heap addr (SnocT p a@ValA{} l2) = Map.insert addr (D $ const $ SnocT (End (dst p)) a l2) heap
-    updateHeap heap addr p = error $ show heap ++ show addr ++ show p
-
-
--- | Derive the pointwise prefix trace semantics from a maximal and inifinite
--- trace semantics (Section 6.12 of POAI).
-pointwise :: LExpr -> Trace D -> Label -> [Trace D]
-pointwise e p l = map (concatT p) $ tracesAt l $ maxinf e Map.empty p
-
--- post(go le []) will be the reachability semantics, e.g., small-step!
--- Wart: Instead of a (set of) Trace `t`, it should take a (set of) Configuration `c`
--- such that `config p = c` (that is, we don't know how to efficiently compute
--- the concretisation function γ(cs) = ts). By doing it this way, we can
--- actually compute.
--- The lifting to sets (of initialisation Traces/Configurations) is routine.
--- we return a list instead of a set, because it might be infinite and we want to
--- enumerate.
-post :: LExpr -> Trace D -> Label -> [[ByNeed.Configuration]]
-post e p l = map (ByNeed.config (unlabel e)) (pointwise e p l)
 
 absD :: Label -> D -> ByNeed.D
 absD l (D d) = case val (d (End l)) of

@@ -10,7 +10,7 @@
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE PatternSynonyms #-}
 
-module Stateful (D(..), DExpr(..), STrace, straceLabels, stateful, statefulD) where
+module Stateful (D(..), DExpr(..), STrace, straceLabels, straceMemory, stateful, statefulD) where
 
 import Control.Applicative
 import Control.Monad
@@ -64,6 +64,11 @@ straceLabels = fmap go
   where
     go (Dagger,_,_,_) = daggerLabel
     go (E le,_,_,_)   = le.at
+
+straceMemory :: STrace -> NonEmpty (Env,Heap)
+straceMemory = fmap go
+  where
+    go (_,env,heap,_) = (env,heap)
 
 instance Show DExpr where
   show Dagger = "‡"

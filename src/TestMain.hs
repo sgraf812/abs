@@ -1,11 +1,12 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeOperators #-}
 
 module TestMain (main) where
 
 import           Hedgehog hiding (label)
-import           Hedgehog.Gen (sized)
+import           Hedgehog.Gen (sized, int)
 import           Control.Monad
 import qualified Gen
 import           Control.Monad.IO.Class
@@ -24,6 +25,7 @@ import qualified Cont
 import qualified Stateful
 import qualified Data.List.NonEmpty as NE
 import qualified Stateless
+import Hedgehog.Range (constant)
 
 
 main :: IO ()
@@ -121,3 +123,42 @@ prop_stateless_maxinf =
     let p2' = takeT (sizeFactor*100) p2
     let same_labels a b = traceLabels a == traceLabels b
     diff p1' same_labels p2'
+
+prop_stateless_split_prefix =
+  property $ do
+    e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
+    n <- forAll (int (constant 1 (sizeFactor*20)))
+    let le = label e
+    let p = Stateless.maxinf' le
+    let pref = takeT n p
+    when (dst pref == daggerLabel) discard -- indexAtLE doesn't work for daggerLabel
+    let suff1 = dropT n p
+    let suff2 = Stateless.unD (Stateless.maxinf (indexAtLE (dst pref) le)) pref
+    let p1 = takeT (sizeFactor*40) suff1
+    let p2 = takeT (sizeFactor*40) suff2
+    let is_pref a b = NE.toList (traceLabels a) `NE.isPrefixOf` traceLabels b
+    diff p2 is_pref p1
+
+eqListBy :: (a -> b -> Bool) -> [a] -> [b] -> Bool
+eqListBy f []     []     = True
+eqListBy f (x:xs) (y:ys) = f x y && eqListBy f xs ys
+eqListBy _ _      _      = False
+
+dropStuffStateless :: (Name :-> Addr, Addr :-> (Name :-> Addr, a)) -> (Name :-> Addr, Addr :-> (Name :-> Addr))
+dropStuffStateless (env, heap) = (env, Map.map (\(env,_d) -> env) heap)
+
+dropStuffStateful :: (Name :-> Addr, Addr :-> (a, Name :-> Addr, b)) -> (Name :-> Addr, Addr :-> (Name :-> Addr))
+dropStuffStateful (env, heap) = (env, Map.map (\(_e,env,_d) -> env) heap)
+
+prop_stateful_materialisable_from_stateless =
+  property $ do
+    e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
+    n <- forAll (int (constant 1 (sizeFactor*40)))
+    let le = label e
+    let ful  = map dropStuffStateful $ NE.take n $ Stateful.straceMemory $ Stateful.stateful le
+    let less = map dropStuffStateless $ NE.take n $ Stateless.traceStates $ Stateless.maxinf' le
+    let eq_state (fullenv, fullheap) (lessenv, lessheap) =
+          fullenv == lessenv &&
+          Map.map (\(_e,env,_d) -> env) fullheap == Map.map (\(env,_d) -> env) lessheap
+    ful === less
+

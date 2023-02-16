@@ -83,7 +83,7 @@ config e p0 = yield (consifyT p0) init
               e2' = subst n n' e2
               c1 = (Map.insert n' e1' h, e2', s)
            in yield p c1
-        App1A _      | App e n <- e ->
+        App1A        | App e n <- e ->
           let c1 = (h, e, Apply n:s)
               (p1,~(Just (ConsT l App2A{} p2))) = splitBalancedPrefix p
               cs1 = yield p1 c1
@@ -233,4 +233,15 @@ denot (Fix e) env = case e of
   where
     (!⊥) :: Ord a => (a :-> D) -> a -> D
     env !⊥ x = Map.findWithDefault DBot' x env
+
+-- post(go le []) will be the reachability semantics, e.g., small-step!
+-- Wart: Instead of a (set of) Trace `t`, it should take a (set of) Configuration `c`
+-- such that `config p = c` (that is, we don't know how to efficiently compute
+-- the concretisation function γ(cs) = ts). By doing it this way, we can
+-- actually compute.
+-- The lifting to sets (of initialisation Traces/Configurations) is routine.
+-- we return a list instead of a set, because it might be infinite and we want to
+-- enumerate.
+post :: Show d => (LExpr -> Trace d -> Trace d) -> LExpr -> Trace d -> Label -> [[ByNeed.Configuration]]
+post sem e p l = map (config (unlabel e)) (pointwise sem e p l)
 
