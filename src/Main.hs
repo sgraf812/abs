@@ -132,6 +132,7 @@ main = forM_ [(15,e_1), (15,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_W), (
   when (ss1 /= ss3) (error "smallstep /= absSmallStep")
   when (traceLabels maxinf /= traceLabels stateless) (error "maxinf /= stateless")
   when (traceLabels maxinf /= CESK.traceLabels stateful) (error "maxinf /= stateful")
+  when (traceLabels maxinf /= traceLabels cont) (error "maxinf /= cont")
 
 --  putStrLn "tracesAt 2"
 --  mapM_ print $ tracesAt 2 $ takeT 10 $ Direct.maxinf e Map.empty (End (at e))

@@ -129,7 +129,7 @@ snoc sem l a = D $ \p -> let p' = (unD sem p) in p' `concatT` if dst p' /= l the
 
 memo :: Addr -> D -> D
 memo a sem = askP $ \pi -> case update a (snocifyT pi) of
-  Just pv  -> D (const pv)
+  Just (l,v)  -> D (const (ConsT l (ValA v) (End daggerLabel)))
   Nothing -> sem
   where
     update addr (SnocT pi' a _)

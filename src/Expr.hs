@@ -210,6 +210,19 @@ indexAtLE l e = fromMaybe (error (show l ++ " " ++ show e)) (find e)
       Lam _ e -> find e
       Let _ e1 e2 -> find e1 <|> find e2
 
+type Val = LExpr
+
+data DExpr = Dagger | E LExpr
+
+pattern DVar n <- (E (LVar n))
+pattern DApp e x <- (E (LApp e x))
+pattern DLam x e <- (E (LLam x e))
+pattern DLet x e1 e2 <- (E (LLet x e1 e2))
+
+isVal :: LExpr -> Bool
+isVal LLam{} = True
+isVal _      = False
+
 type Addr = Int
 
 hash :: Trace d -> Addr
@@ -283,7 +296,7 @@ snocifyT t = go End t
     go f (SnocT t a l) = SnocT (go f t) a l
     go f (ConsT l a t) = go (\l' -> SnocT (f l) a l') t
 
-concatT :: Trace d -> Trace d -> Trace d
+concatT :: HasCallStack => Trace d -> Trace d -> Trace d
 concatT t1 t2 = con t1 t2
   where
     con :: Trace d -> Trace d -> Trace d
@@ -313,12 +326,12 @@ lenT (End _) = 0
 lenT (ConsT _ _ t) = 1 + lenT t
 lenT (SnocT t _ _) = 1 + lenT t
 
-valT :: Trace d -> Maybe (Trace d)
+valT :: Trace d -> Maybe (Label, Value d)
 valT t = go (snocifyT t)
   where
     go (End _) = Nothing
     go (SnocT t a l) = case a of
-      ValA _    -> Just (ConsT (dst t) a (End l))
+      ValA v    -> Just (dst t, v)
       App1A{}   -> Nothing
       App2A _ _ -> Nothing
       BindA {}  -> Nothing
@@ -327,9 +340,7 @@ valT t = go (snocifyT t)
     go ConsT {} = error "invalid"
 
 val :: Trace d -> Maybe (Value d)
-val t = go <$> valT t
-  where
-    go (ConsT _ (ValA val) _) = val
+val t = snd <$> valT t
 
 type (:->) = Map
 infixr :->

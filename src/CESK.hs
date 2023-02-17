@@ -33,17 +33,6 @@ import qualified Data.List.NonEmpty as NE
 
 orElse = flip fromMaybe
 
-data DExpr = Dagger | E LExpr
-type Val = LExpr
-pattern DVar n <- (E (LVar n))
-pattern DApp e x <- (E (LApp e x))
-pattern DLam x e <- (E (LLam x e))
-pattern DLet x e1 e2 <- (E (LLet x e1 e2))
-
-isVal :: LExpr -> Bool
-isVal LLam{} = True
-isVal _      = False
-
 type State = (DExpr, Env, Heap, Cont)
 type Env = Name :-> Addr
 type Heap = Addr :-> (LExpr, Env, D)

@@ -50,18 +50,34 @@ stepDagger a = C $ \k p ->
     then k p
     else ConsT daggerLabel a $ k $ SnocT p a daggerLabel
 
-memo :: Addr -> C -> C
-memo addr sem = askP $ \pi -> case lookup (snocifyT pi) of
-  Just pv -> C $ \k p -> pv `concatT` k (rewrite p (src pv) `concatT` pv)
-  Nothing -> sem
-  where
-    rewrite (SnocT p a@LookupA{} _l) l = SnocT p a l
-    lookup (SnocT p a _)
-      | UpdateA addr' <- a
-      , addr == addr'
-      = valT p
-      | otherwise = lookup p
-    lookup (End l) = Nothing
+whenAtP :: Label -> C -> C
+whenAtP l c = askP $ \p -> if l == dst p then c else botC
+
+memo :: Addr -> Label -> C -> C
+memo a l sem = askP $ \pi ->
+  let (l', d) = case update a (snocifyT pi) of
+        Just (l', v) -> (l', step (ValA v) daggerLabel)
+        Nothing      -> (l, sem)
+      update addr (SnocT pi' a _)
+        | UpdateA addr' <- a
+        , addr == addr'
+        = valT pi'
+        | otherwise  = update addr pi'
+      update _ End{} = Nothing
+  in step (LookupA a) l' <++> d <++> whenAtP daggerLabel (step (UpdateA a) daggerLabel)
+
+--memo :: Addr -> C -> C
+--memo addr sem = askP $ \pi -> case lookup (snocifyT pi) of
+--  Just pv -> C $ \k p -> pv `concatT` k (rewrite p (src pv) `concatT` pv)
+--  Nothing -> sem
+--  where
+--    rewrite (SnocT p a@LookupA{} _l) l = SnocT p a l
+--    lookup (SnocT p a _)
+--      | UpdateA addr' <- a
+--      , addr == addr'
+--      = valT p
+--      | otherwise = lookup p
+--    lookup (End l) = Nothing
 
 (>->) :: Action C -> Label -> C
 a >-> l = step a l
@@ -110,7 +126,7 @@ maxinf le env p
          in step (ValA val) daggerLabel
       Let n le1 le2 -> askP $ \p ->
         let a = hash p
-            c = step (LookupA a) le1.at <++> memo a (go le1 env') <++> stepDagger (UpdateA a)
+            c = memo a le1.at (go le1 env')
             env' = Map.insert n c env
          in step (BindA n a c) le2.at <++> go le2 env'
 

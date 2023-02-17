@@ -12,7 +12,7 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
-module Direct (D(..), Value(..), maxinf, maxinfD, snoc) where
+module Direct (D(..), Value(..), maxinf, maxinfD) where
 
 import Control.Applicative
 import Control.Monad
@@ -32,6 +32,7 @@ import qualified ByNeed
 import Data.Void
 import Data.Bifunctor
 import Data.List.NonEmpty (NonEmpty)
+import GHC.Stack
 
 orElse = flip fromMaybe
 
@@ -96,55 +97,62 @@ instance Ord D where
 instance Show D where
   show _ = "D"
 
-cons :: Action D -> Label -> D -> D
-cons a l sem = D $ \p -> ConsT (dst p) a $ unD sem $ SnocT p a l
+concatD :: HasCallStack => D -> D -> D
+concatD (D d1) (D d2) = D $ \p -> let p1 = d1 p in p1 `concatT` d2 (p `concatT` p1)
+infixr 5 `concatD`
 
-snoc :: D -> Label -> Action D -> D
-snoc sem l a = D $ \p -> let p' = (unD sem p) in p' `concatT` if dst p' /= l then End (dst p') else ConsT l a (End l)
+(>.>) :: HasCallStack => D -> D -> D
+(>.>) = concatD
 
-memo :: Addr -> D -> D
-memo a sem = D $ \pi -> case update a (snocifyT pi) of
-  Just pv -> pv
-  Nothing -> unD sem pi
-  where
-    update addr (SnocT pi' a _)
-      | (UpdateA addr') <- a
-      , addr == addr'
-      ---, trace ("found(" ++ show pk ++ "): " ++ show pb) True
-      = valT pi'
-      | otherwise     = update addr pi'
-    update _ End{} = Nothing
+askP :: (Trace D -> D) -> D
+askP f = D $ \p -> unD (f p) p
 
-(!⊥) :: Ord a => (a :-> D) -> a -> D
-env !⊥ x = Map.findWithDefault botD x env
+whenP :: Maybe a -> (a -> D) -> D
+whenP Nothing  _ = botD
+whenP (Just a) d = d a
+
+whenAtP :: Label -> D -> D
+whenAtP l d = askP $ \p -> if l == dst p then d else botD
+
+step :: Action D -> Label -> D
+step a l = D $ \p -> ConsT (dst p) a (End l)
+
+memo :: Addr -> Label -> D -> D
+memo a l sem = askP $ \pi ->
+  let (l', d) = case update a (snocifyT pi) of
+        Just (l', v) -> (l', step (ValA v) daggerLabel)
+        Nothing      -> (l, sem)
+      update addr (SnocT pi' a _)
+        | UpdateA addr' <- a
+        , addr == addr'
+        = valT pi'
+        | otherwise
+        = update addr pi'
+      update _ End{} = Nothing
+  in step (LookupA a) l' >.> d >.> whenAtP daggerLabel (step (UpdateA a) daggerLabel)
 
 maxinfD :: LExpr -> (Name :-> D) -> D
-maxinfD le env = D (maxinf le env)
+maxinfD le env = go le env
+  where
+    (!⊥) :: Ord a => (a :-> D) -> a -> D
+    env !⊥ x = Map.findWithDefault botD x env
+    go :: LExpr -> (Name :-> D) -> D
+    go le !env = whenAtP le.at $ case le.thing of
+      Var n -> env !⊥ n
+      App le n -> whenP (Map.lookup n env) $ \d ->
+        let apply = askP $ \p -> whenP (val p) $ \(Fun f) -> f d
+         in step App1A le.at >.> go le env >.> apply
+      Lam n le' ->
+        let val = Fun (\d -> step (App2A n d) le'.at >.> go le' (Map.insert n d env))
+         in step (ValA val) daggerLabel
+      Let n le1 le2 -> askP $ \p ->
+        let a = hash p
+            d = memo a le1.at (go le1 env')
+            env' = Map.insert n d env
+         in step (BindA n a d) le2.at >.> go le2 env'
 
 maxinf :: LExpr -> (Name :-> D) -> Trace D -> Trace D
-maxinf le env p
-  | dst p /= le.at = unD botD p
-  | otherwise      = unD (go le env) p
-  where
-    go :: LExpr -> (Name :-> D) -> D
-    go le !env = case le.thing of
-      Var n -> env !⊥ n
-      App le n -> D $ \p ->
-        let p2 = unD (cons App1A le.at (go le env)) p
-         in case Map.lookup n env of
-             Just d -> concatT p2 $ case val p2 of
-              Just (Fun f) -> unD (f d) (concatT p p2)
-              Nothing      -> unD botD (concatT p p2) -- Stuck! Can happen in an open program
-                                                      -- Or with data types
-             Nothing -> unD botD p
-      Lam n le' ->
-        let val = Fun (\d -> cons (App2A n d) (le'.at) (go le' (Map.insert n d env)))
-         in D $ \_ -> ConsT le.at (ValA val) (End daggerLabel)
-      Let n le1 le2 -> D $ \p ->
-        let a = hash p
-            d = cons (LookupA a) le1.at (snoc (memo a (go le1 env')) daggerLabel (UpdateA a))
-            env' = Map.insert n d env
-         in unD (cons (BindA n a d) le2.at (go le2 env')) p
+maxinf le env p = unD (maxinfD le env) p
 
 absD :: Label -> D -> ByNeed.D
 absD l (D d) = case val (d (End l)) of
