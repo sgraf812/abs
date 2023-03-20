@@ -26,6 +26,7 @@ import qualified CESK
 import qualified Data.List.NonEmpty as NE
 import qualified FunnyStateless
 import Hedgehog.Range (constant)
+import qualified Stateful
 
 
 main :: IO ()
@@ -101,7 +102,7 @@ prop_direct_cont_abs =
     let p' = takeT (sizeFactor*100) p
     p' === Cont.absTrace (Cont.concTrace p')
 
-prop_stateful_maxinf =
+prop_CESK_maxinf =
   property $ do
     e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
     let le = label e
@@ -109,8 +110,20 @@ prop_stateful_maxinf =
     let p2 = maxinf le Map.empty (End le.at)
     let p1' = NE.take (sizeFactor*100+1) p1
     let p2' = takeT (sizeFactor*100) p2
-    let ignoring_dagger (CESK.Ret _,_,_,_) _ = True
-        ignoring_dagger (CESK.E e,_,_,_)   l = e.at == l
+    let ignoring_dagger (Ret _,_,_,_) _ = True
+        ignoring_dagger (E e,_,_,_)   l = e.at == l
+    diff p1' (\a b -> length a == length b && and (zipWith ignoring_dagger a b)) (NE.toList $ traceLabels p2')
+
+prop_stateful_maxinf =
+  property $ do
+    e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
+    let le = label e
+    let p1 = Stateful.run le
+    let p2 = maxinf le Map.empty (End le.at)
+    let p1' = NE.take (sizeFactor*100+1) p1
+    let p2' = takeT (sizeFactor*100) p2
+    let ignoring_dagger (Ret _,_,_,_) _ = True
+        ignoring_dagger (E e,_,_,_)   l = e.at == l
     diff p1' (\a b -> length a == length b && and (zipWith ignoring_dagger a b)) (NE.toList $ traceLabels p2')
 
 prop_stateless_maxinf =
@@ -150,7 +163,7 @@ dropStuffFunnyStateless (env, heap) = (env, Map.map (\(env,_d) -> env) heap)
 dropStuffStateful :: (Name :-> Addr, Addr :-> (a, Name :-> Addr, b)) -> (Name :-> Addr, Addr :-> (Name :-> Addr))
 dropStuffStateful (env, heap) = (env, Map.map (\(_e,env,_d) -> env) heap)
 
-prop_stateful_materialisable_from_stateless =
+prop_CESK_materialisable_from_stateless =
   property $ do
     e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
     n <- forAll (int (constant 1 (sizeFactor*40)))

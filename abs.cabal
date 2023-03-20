@@ -36,6 +36,7 @@ library
         CESK
         FunnyStateless
         Stateful
+        Statefulish1
         Expr
         Main
         Gen

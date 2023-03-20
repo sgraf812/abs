@@ -11,7 +11,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE TypeFamilies #-}
 
-module Stateful (D(..), ProgPoint(..), Trace, traceLabels, traceEnv, run, runD) where
+module Statefulish1 (D(..), ProgPoint(..), Trace, traceLabels, run, runD) where
 
 import Control.Applicative
 import Control.Monad
@@ -41,9 +41,9 @@ orElse = flip fromMaybe
 -- 2. Move the Env to meta level
 -- 3. Realise that we can now get rid of the stack, since everything happens
 --    on the meta call stack
-type State = (ProgPoint (Val,Value D), Env, Cache, Cont)
+type State = (ProgPoint (Val,Value D), Cache, Cont)
 type Env = Name :-> D
-type Cache = Addr :-> Maybe (Val,Env,D)
+type Cache = Addr :-> Maybe (Val,D)
 type Cont = [Frame]
 data Frame
   = Apply D
@@ -60,13 +60,8 @@ type Trace = NonEmpty State
 traceLabels :: Trace -> NonEmpty Label
 traceLabels = fmap go
   where
-    go (Ret _,_,_,_) = returnLabel
-    go (E le,_,_,_)  = le.at
-
-traceEnv :: Trace -> NonEmpty Env
-traceEnv = fmap go
-  where
-    go (_,env,_,_) = env
+    go (Ret _,_,_) = returnLabel
+    go (E le,_,_)  = le.at
 
 srcS, dstS :: Trace -> State
 srcS = NE.head
@@ -91,13 +86,16 @@ concatS :: Trace -> Trace -> Trace
 concatS (s NE.:| t1) t2 = s NE.:| con s t1 t2
   where
     con :: State -> [State] -> Trace -> [State]
-    con s@(e,_,_,_) []      ((e',_,_,_) NE.:| t2) = assert (eqPoint e e') t2
-    con _           (s':t1) t2                    = s' : con s' t1 t2
+    con s@(e,_,_) []      ((e',_,_) NE.:| t2) = assert (eqPoint e e') t2
+    con _         (s':t1) t2                  = s' : con s' t1 t2
 
 -- | Empty list is Nothing (e.g., undefined), non-empty list is Just
 type MaybeSTrace = [State]
 
 type PartialD = State -> MaybeSTrace
+
+askS :: (State -> D) -> D
+askS f = D $ \s -> unD (f s) s
 
 injD :: D -> PartialD
 injD (D d) = \s -> NE.toList (d s)
@@ -109,66 +107,61 @@ step fun = D $ \s -> s NE.:| fun s
 D d1 >.> D d2 = D $ \s -> let p = d1 s in p `concatS` d2 (dstS p)
 
 run :: LExpr -> Trace
-run le = unD (runD le) (E le,Map.empty,Map.empty,[])
+run le = unD (runD le) (E le,Map.empty,[])
 
 runD :: LExpr -> D
 runD le = D $ \s -> case s of
-  (E le',_,_,_) | le.at /= le'.at -> unD botD s
-  _                               -> unD (go le) s
+  (E le',_,_) | le.at /= le'.at -> unD botD s
+  _                             -> unD (go le Map.empty) s
   where
-    go :: LExpr -> D
-    go le = case le.thing of
-      Var n -> var
-      Lam n le' -> step (ret (Fun (\d -> step (app2 n le' d) >.> go le')))
-      App le' n -> step app1 >.> go le' >.> reduce
-      Let n le1 le2 -> step (let_ (memo le1 (go le1))) >.> go le2
+    go :: LExpr -> Env -> D
+    go le env = case le.thing of
+      Var n -> env Map.!? n `orElse` botD
+      Lam n le' -> step (ret (Fun (\d -> step (app2 n le') >.> go le' (Map.insert n d env))))
+      App le' n -> step (app1 (env Map.! n)) >.> go le' env >.> reduce
+      Let n le1 le2 -> D $ \(e,cache,cont) ->
+        let (addr,cache') = alloc cache
+            d = memo le1 addr (go le1 env')
+            env' = Map.insert n d env
+         in unD (step let_ >.> go le2 env') (e,cache',cont)
 
 ret :: Value D -> PartialD
-ret v (E sv,env,cache,cont) | isVal sv = [(Ret (sv, v),env, cache, cont)]
+ret v (E sv,cache,cont) | isVal sv = [(Ret (sv, v),cache, cont)]
 ret _ _ = []
 
-var :: D
-var = D $ \s@(e, env, cont,cache) ->
-  case e of
-    DVar x | Just d <- Map.lookup x env -> unD d s
-    _                                   -> NE.singleton s
-
-
-memo :: LExpr -> D -> Env -> Addr -> D
-memo e d env a = step go
+memo :: LExpr -> Addr -> D -> D
+memo e a d = step go
   where
-    go s@(DVar _,_,cache,cont) = case Map.lookup a cache of
-      Just Nothing -> injD (d >.> step upd) (E e, env, cache, Update a : cont)
-      Just (Just (sv,env,d)) -> injD (d >.> step upd) (E sv, env, cache, Update a : cont)
+    go s@(DVar _,cache,cont) = case Map.lookup a cache of
+      Just Nothing -> injD (d >.> step upd) (E e, cache, Update a : cont)
+      Just (Just (sv,d)) -> injD (d >.> step upd) (E sv, cache, Update a : cont)
       Nothing -> error ("invalid address " ++ show a)
     go s = []
 
 upd :: PartialD
-upd (Ret (sv,v), env, cache, Update a:cont)
+upd (Ret (sv,v), cache, Update a:cont)
   | isVal sv
-  = [(Ret (sv,v), env, Map.insert a (Just (sv,env,step (ret v))) cache, cont)]
+  = [(Ret (sv,v), Map.insert a (Just (sv,step (ret v))) cache, cont)]
 upd _ = []
 
-app1 :: PartialD
-app1 (DApp e x, env, cache, cont) | Just d <- Map.lookup x env = [(E e, env, cache, Apply d : cont)]
-app1 _ = []
+app1 :: D -> PartialD
+app1 d (DApp e x, cache, cont) = [(E e, cache, Apply d : cont)]
+app1 d _ = []
 
-app2 :: Name -> LExpr -> D -> PartialD
-app2 n e d (Ret (sv,v), env, cache, Apply _ : cont) = [(E e, Map.insert n d env, cache, cont)]
-app2 n e d _ = []
+app2 :: Name -> LExpr -> PartialD
+app2 n e (Ret (sv,v), cache, Apply _ : cont) = [(E e, cache, cont)]
+app2 n e _ = []
 
 reduce :: D
 reduce = D go
   where
-    go s@(Ret (sv,(Fun f)), _, _, Apply d : cont) = unD (f d) s
+    go s@(Ret (sv,(Fun f)), _, Apply d : cont) = unD (f d) s
     go s = NE.singleton s
 
-let_ :: (Env -> Addr -> D) -> PartialD
-let_ mk_d (DLet x e1 e2, env, cache, cont)
-  | (addr,cache') <- alloc cache
-  , let env' = Map.insert x (mk_d env' addr) env
-  = [(E e2, env', cache', cont)]
-let_ _ _ = []
+let_ :: PartialD
+let_ (DLet x e1 e2, cache, cont)
+  = [(E e2, cache, cont)]
+let_ _ = []
 
 alloc :: Cache -> (Addr, Cache)
 alloc c | let a = Map.size c = (a, Map.insert a Nothing c)
