@@ -32,11 +32,12 @@ library
     exposed-modules:
         ByNeed
         Cont
-        Direct
-        CESK
-        FunnyStateless
+        Stateless
         Stateful
-        Statefulish1
+        TooEarlyStateless
+        Cacheful
+        Envless
+        Stackless
         Expr
         Main
         Gen

@@ -11,7 +11,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE TypeFamilies #-}
 
-module Statefulish1 (D(..), ProgPoint(..), Trace, traceLabels, run, runD) where
+module Envless (D(..), ProgPoint(..), Trace, traceLabels, run, runD) where
 
 import Control.Applicative
 import Control.Monad
@@ -34,7 +34,7 @@ import qualified Data.List.NonEmpty as NE
 
 orElse = flip fromMaybe
 
--- | How we go from CESK to this state
+-- | How we go from Stateful to this state
 --
 -- 1. Move Lookup into Env; have Env = Name :-> D and let its action look into
 --    the Cache, getting rid of the Heap. Requires a bit of tricky setup in let_

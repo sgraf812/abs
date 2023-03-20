@@ -13,27 +13,27 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 
 -- | Although this semantics might seem like it is the stateless semantics
--- associated to CESK, strictly speaking it is not. Note that the Heap contains
--- a D that does Lookup and Update transitions, while the Heap in the CESK
+-- associated to Stateful, strictly speaking it is not. Note that the Heap contains
+-- a D that does Lookup and Update transitions, while the Heap in the Stateful
 -- semantics does not.
 --
 -- I tried pushing the lookup and update transitions to the Var case, as for
--- CESK. But that needs to store the start label alongside the expression
+-- Stateful. But that needs to store the start label alongside the expression
 -- bound in the heap, e.g., `Heap = Addr :-> (Label, Env, D)`, at which point
 -- we can just write `Heap = Addr :-> (LExpr, Env, D)` and we have the
--- actual CESK heap (modulo abstraction of D). Then Update transitions must
+-- actual Stateful heap (modulo abstraction of D). Then Update transitions must
 -- carry the D as well as the LExpr it denotes, perhaps even the Env.
 -- (We *could* recover those from the Value transition just before the Update,
 -- but then `materialiseState` would have to do non-trivial stuff wrapping
--- a Fun value into a D (what `ret` does in CESK). I distate that; a disputable
+-- a Fun value into a D (what `ret` does in Stateful). I distate that; a disputable
 -- judgment call.)
 -- Similarly, Bind actions would need to carry the LEXpr and its denotation.
 --
 -- In short: This semantics was a useful experiment in that it embeds the
 -- environment as state, a truly stateless trace semantics. Other than that,
--- it's neither /the/ stateless trace semantics associated to CESK nor is it
--- as simple as (and as thus useful as) the "Direct" semantics.
-module FunnyStateless (D(..), Value(..), runInit, run, traceStates) where
+-- it's neither /the/ stateless trace semantics associated to Stateful nor is it
+-- as simple as (and as thus useful as) the "Stateless" semantics.
+module TooEarlyStateless (D(..), Value(..), runInit, run, traceStates) where
 
 import Control.Applicative
 import Control.Monad

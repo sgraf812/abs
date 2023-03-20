@@ -12,7 +12,7 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
-module Direct (D(..), Value(..), maxinf, maxinfD) where
+module Stateless (D(..), Value(..), maxinf, maxinfD) where
 
 import Control.Applicative
 import Control.Monad

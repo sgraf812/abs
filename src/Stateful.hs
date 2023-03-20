@@ -9,9 +9,8 @@
 {-# LANGUAGE ImpredicativeTypes #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE PatternSynonyms #-}
-{-# LANGUAGE TypeFamilies #-}
 
-module Stateful (D(..), ProgPoint(..), Trace, traceLabels, traceEnv, run, runD) where
+module Stateful (D(..), ProgPoint(..), Trace, traceLabels, traceMemory, run, runD) where
 
 import Control.Applicative
 import Control.Monad
@@ -34,26 +33,17 @@ import qualified Data.List.NonEmpty as NE
 
 orElse = flip fromMaybe
 
--- | How we go from CESK to this state
---
--- 1. Move Lookup into Env; have Env = Name :-> D and let its action look into
---    the Cache, getting rid of the Heap. Requires a bit of tricky setup in let_
--- 2. Move the Env to meta level
--- 3. Realise that we can now get rid of the stack, since everything happens
---    on the meta call stack
-type State = (ProgPoint (Val,Value D), Env, Cache, Cont)
-type Env = Name :-> D
-type Cache = Addr :-> Maybe (Val,Env,D)
+type State = (ProgPoint (Val, SValue), Env, Heap, Cont)
+type Env = Name :-> Addr
+type Heap = Addr :-> (LExpr, Env, D)
 type Cont = [Frame]
 data Frame
-  = Apply D
+  = Apply Addr
   | Update Addr
   deriving Show
 
 newtype D = D { unD :: State -> Trace }
-newtype instance Value D = Fun (D -> D)
-instance Show (Value D) where
-  show (Fun _) = "fun"
+data SValue = Fun D deriving Show
 
 type Trace = NonEmpty State
 
@@ -63,10 +53,10 @@ traceLabels = fmap go
     go (Ret _,_,_,_) = returnLabel
     go (E le,_,_,_)  = le.at
 
-traceEnv :: Trace -> NonEmpty Env
-traceEnv = fmap go
+traceMemory :: Trace -> NonEmpty (Env,Heap)
+traceMemory = fmap go
   where
-    go (_,env,_,_) = env
+    go (_,env,heap,_) = (env,heap)
 
 srcS, dstS :: Trace -> State
 srcS = NE.head
@@ -118,57 +108,44 @@ runD le = D $ \s -> case s of
   where
     go :: LExpr -> D
     go le = case le.thing of
-      Var n -> var
-      Lam n le' -> step (ret (Fun (\d -> step (app2 n le' d) >.> go le')))
-      App le' n -> step app1 >.> go le' >.> reduce
-      Let n le1 le2 -> step (let_ (memo le1 (go le1))) >.> go le2
+      Var n -> step var1 >.> step var2
+      Lam n le' -> step (ret (Fun (go le')))
+      App le' n -> step app1 >.> go le' >.> step app2
+      Let n le1 le2 -> step (let_ (go le1)) >.> go le2
 
-ret :: Value D -> PartialD
-ret v (E sv,env,cache,cont) | isVal sv = [(Ret (sv, v),env, cache, cont)]
+ret :: SValue -> PartialD
+ret v (E sv,env,heap,cont) | isVal sv = [(Ret (sv,v), env, heap, cont)]
 ret _ _ = []
 
-var :: D
-var = D $ \s@(e, env, cont,cache) ->
-  case e of
-    DVar x | Just d <- Map.lookup x env -> unD d s
-    _                                   -> NE.singleton s
+var1 :: PartialD
+var1 (E (LVar x), env, heap, cont)
+  | Just a <- Map.lookup x env
+  , Just (e, env', d) <- Map.lookup a heap
+  = injD d (E e, env', heap, Update a:cont)
+var1 _ = []
 
-
-memo :: LExpr -> D -> Env -> Addr -> D
-memo e d env a = step go
-  where
-    go s@(DVar _,_,cache,cont) = case Map.lookup a cache of
-      Just Nothing -> injD (d >.> step upd) (E e, env, cache, Update a : cont)
-      Just (Just (sv,env,d)) -> injD (d >.> step upd) (E sv, env, cache, Update a : cont)
-      Nothing -> error ("invalid address " ++ show a)
-    go s = []
-
-upd :: PartialD
-upd (Ret (sv,v), env, cache, Update a:cont)
+var2 :: PartialD
+var2 (Ret (sv, v), env, heap, Update a:cont)
   | isVal sv
-  = [(Ret (sv,v), env, Map.insert a (Just (sv,env,step (ret v))) cache, cont)]
-upd _ = []
+  = [(Ret (sv,v), env, Map.insert a (sv,env,step d) heap, cont)]
+  where
+    d (E sv',env,heap,cont) | sv'.at == sv.at = [(Ret (sv,v), env, heap, cont)]
+    d _ = []
+var2 _ = []
 
 app1 :: PartialD
-app1 (DApp e x, env, cache, cont) | Just d <- Map.lookup x env = [(E e, env, cache, Apply d : cont)]
+app1 (E (LApp e x), env, heap, cont) | Just a <- Map.lookup x env = [(E e, env, heap, Apply a : cont)]
 app1 _ = []
 
-app2 :: Name -> LExpr -> D -> PartialD
-app2 n e d (Ret (sv,v), env, cache, Apply _ : cont) = [(E e, Map.insert n d env, cache, cont)]
-app2 n e d _ = []
+app2 :: PartialD
+app2 (Ret (LLam x e, Fun d), env, heap, Apply a : cont)
+  = injD d (E e, Map.insert x a env, heap, cont)
+app2 _ = []
 
-reduce :: D
-reduce = D go
-  where
-    go s@(Ret (sv,(Fun f)), _, _, Apply d : cont) = unD (f d) s
-    go s = NE.singleton s
-
-let_ :: (Env -> Addr -> D) -> PartialD
-let_ mk_d (DLet x e1 e2, env, cache, cont)
-  | (addr,cache') <- alloc cache
-  , let env' = Map.insert x (mk_d env' addr) env
-  = [(E e2, env', cache', cont)]
+let_ :: D -> PartialD
+let_ d1 (E (LLet x e1 e2), env,heap,cont)
+  | let a = freshAddr heap
+  , let env' = Map.insert x a env
+  = [(E e2, env', Map.insert a (e1, env', d1) heap, cont)]
 let_ _ _ = []
 
-alloc :: Cache -> (Addr, Cache)
-alloc c | let a = Map.size c = (a, Map.insert a Nothing c)

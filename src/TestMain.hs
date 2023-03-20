@@ -20,13 +20,13 @@ import           Control.Concurrent.Async.Lifted (race)
 
 import           Expr hiding (assert)
 import           ByNeed
-import           Direct
+import           Stateless
 import qualified Cont
-import qualified CESK
-import qualified Data.List.NonEmpty as NE
-import qualified FunnyStateless
-import Hedgehog.Range (constant)
 import qualified Stateful
+import qualified Data.List.NonEmpty as NE
+import qualified TooEarlyStateless
+import Hedgehog.Range (constant)
+import qualified Cacheful
 
 
 main :: IO ()
@@ -84,7 +84,7 @@ prop_maxinf_maximal_trace_stuck_or_balanced =
     --forM_ [0..20] $ \n ->
     --  classify (fromString (printf "longer than %3d" (20*n))) (lenT p' > 20*n)
 
-prop_maxinf_direct_is_cont =
+prop_maxinf_stateless_is_cont =
   property $ do
     e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
     let le = label e
@@ -102,18 +102,6 @@ prop_direct_cont_abs =
     let p' = takeT (sizeFactor*100) p
     p' === Cont.absTrace (Cont.concTrace p')
 
-prop_CESK_maxinf =
-  property $ do
-    e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
-    let le = label e
-    let p1 = CESK.run le
-    let p2 = maxinf le Map.empty (End le.at)
-    let p1' = NE.take (sizeFactor*100+1) p1
-    let p2' = takeT (sizeFactor*100) p2
-    let ignoring_dagger (Ret _,_,_,_) _ = True
-        ignoring_dagger (E e,_,_,_)   l = e.at == l
-    diff p1' (\a b -> length a == length b && and (zipWith ignoring_dagger a b)) (NE.toList $ traceLabels p2')
-
 prop_stateful_maxinf =
   property $ do
     e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
@@ -126,27 +114,39 @@ prop_stateful_maxinf =
         ignoring_dagger (E e,_,_,_)   l = e.at == l
     diff p1' (\a b -> length a == length b && and (zipWith ignoring_dagger a b)) (NE.toList $ traceLabels p2')
 
-prop_stateless_maxinf =
+prop_cacheful_maxinf =
   property $ do
     e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
     let le = label e
-    let p1 = FunnyStateless.runInit le
+    let p1 = Cacheful.run le
+    let p2 = maxinf le Map.empty (End le.at)
+    let p1' = NE.take (sizeFactor*100+1) p1
+    let p2' = takeT (sizeFactor*100) p2
+    let ignoring_dagger (Ret _,_,_,_) _ = True
+        ignoring_dagger (E e,_,_,_)   l = e.at == l
+    diff p1' (\a b -> length a == length b && and (zipWith ignoring_dagger a b)) (NE.toList $ traceLabels p2')
+
+prop_too_early_stateless_maxinf =
+  property $ do
+    e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
+    let le = label e
+    let p1 = TooEarlyStateless.runInit le
     let p2 = maxinf le Map.empty (End le.at)
     let p1' = takeT (sizeFactor*100) p1
     let p2' = takeT (sizeFactor*100) p2
     let same_labels a b = traceLabels a == traceLabels b
     diff p1' same_labels p2'
 
-prop_stateless_split_prefix =
+prop_too_eraly_stateless_split_prefix =
   property $ do
     e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
     n <- forAll (int (constant 1 (sizeFactor*20)))
     let le = label e
-    let p = FunnyStateless.runInit le
+    let p = TooEarlyStateless.runInit le
     let pref = takeT n p
     when (dst pref == returnLabel) discard -- indexAtLE doesn't work for daggerLabel
     let suff1 = dropT n p
-    let suff2 = FunnyStateless.unD (FunnyStateless.run (indexAtLE (dst pref) le)) pref
+    let suff2 = TooEarlyStateless.unD (TooEarlyStateless.run (indexAtLE (dst pref) le)) pref
     let p1 = takeT (sizeFactor*40) suff1
     let p2 = takeT (sizeFactor*40) suff2
     let is_pref a b = NE.toList (traceLabels a) `NE.isPrefixOf` traceLabels b
@@ -157,19 +157,19 @@ eqListBy f []     []     = True
 eqListBy f (x:xs) (y:ys) = f x y && eqListBy f xs ys
 eqListBy _ _      _      = False
 
-dropStuffFunnyStateless :: (Name :-> Addr, Addr :-> (Name :-> Addr, a)) -> (Name :-> Addr, Addr :-> (Name :-> Addr))
-dropStuffFunnyStateless (env, heap) = (env, Map.map (\(env,_d) -> env) heap)
+dropStuffTooEarlyStateless :: (Name :-> Addr, Addr :-> (Name :-> Addr, a)) -> (Name :-> Addr, Addr :-> (Name :-> Addr))
+dropStuffTooEarlyStateless (env, heap) = (env, Map.map (\(env,_d) -> env) heap)
 
-dropStuffStateful :: (Name :-> Addr, Addr :-> (a, Name :-> Addr, b)) -> (Name :-> Addr, Addr :-> (Name :-> Addr))
-dropStuffStateful (env, heap) = (env, Map.map (\(_e,env,_d) -> env) heap)
+dropStuffCacheful :: (Name :-> Addr, Addr :-> (a, Name :-> Addr, b)) -> (Name :-> Addr, Addr :-> (Name :-> Addr))
+dropStuffCacheful (env, heap) = (env, Map.map (\(_e,env,_d) -> env) heap)
 
-prop_CESK_materialisable_from_stateless =
+prop_Stateful_materialisable_from_stateless =
   property $ do
     e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
     n <- forAll (int (constant 1 (sizeFactor*40)))
     let le = label e
-    let ful  = map dropStuffStateful $ NE.take n $ CESK.traceMemory $ CESK.run le
-    let less = map dropStuffFunnyStateless $ NE.take n $ FunnyStateless.traceStates $ FunnyStateless.runInit le
+    let ful  = map dropStuffCacheful $ NE.take n $ Stateful.traceMemory $ Stateful.run le
+    let less = map dropStuffTooEarlyStateless $ NE.take n $ TooEarlyStateless.traceStates $ TooEarlyStateless.runInit le
     let eq_state (fullenv, fullheap) (lessenv, lessheap) =
           fullenv == lessenv &&
           Map.map (\(_e,env,_d) -> env) fullheap == Map.map (\(env,_d) -> env) lessheap

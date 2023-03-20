@@ -23,12 +23,12 @@ import Data.Ord
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Debug.Trace
-import qualified Direct
-import qualified CESK
+import qualified Stateless
+import qualified Stateful
 import Expr
 import Text.Show (showListWith)
 import qualified Data.List.NonEmpty as NE
-import qualified FunnyStateless
+import qualified TooEarlyStateless
 
 x, y, z, a, b, c, d, e, f, i, t :: Expr
 x : y : z : a : b : c : d : e : f : i : t : _ = map (Fix . Var . (: [])) "xyzabcdefit"
@@ -88,7 +88,7 @@ e_bug1 = label $ read "let a = (λb.let c = a in (let d = λe.a b in let f = let
 -- >>> e_2
 -- 1(let x = 2(λy. 3(y))4 in 5(6(7(x) x) x))
 --
--- >>> takeT 10 $ Direct.maxinf e_2 Map.empty (End (at e_2))
+-- >>> takeT 10 $ Stateless.maxinf e_2 Map.empty (End (at e_2))
 -- [1]-bind->[5]-app1->[6]-app1->[7]-look([1]_0)->[2]-val(fun)->[4]-app2->[3]-look([1]_0)->[2]-val(fun)->[4]-app2->[3]-look([1]_0)->[2]
 main :: IO ()
 main = forM_ [(15,e_1), (15,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_W), (10,e_bool), (50,e_fresh), (50,e_abs), (4,e_stuck_app), (20,e_stuck_let), (30, e_bug1)] $ \(n,e) -> do
@@ -105,7 +105,7 @@ main = forM_ [(15,e_1), (15,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_W), (
   mapM_ print ss1
   putStrLn "-----------------------------"
   putStrLn "defnSmallStep (derived from maximal trace)"
-  let ss2 = take n $ defnSmallStep (unlabel e) (Direct.maxinf e Map.empty)
+  let ss2 = take n $ defnSmallStep (unlabel e) (Stateless.maxinf e Map.empty)
   mapM_ print ss2
   putStrLn "-----------------------------"
   putStrLn "absSmallStep (derived from maximal trace semantics)"
@@ -113,35 +113,35 @@ main = forM_ [(15,e_1), (15,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_W), (
   mapM_ print ss3
   putStrLn "-----------------------------"
   putStrLn "maximal and infinite trace (scary maximal trace semantics)"
-  let maxinf = takeT n $ Direct.maxinf e Map.empty (End (at e))
+  let maxinf = takeT n $ Stateless.maxinf e Map.empty (End (at e))
   print maxinf
   putStrLn "-----------------------------"
   putStrLn "maximal and infinite trace, stateless"
-  let stateless = takeT n $ FunnyStateless.runInit e
+  let stateless = takeT n $ TooEarlyStateless.runInit e
   print stateless
   putStrLn "-----------------------------"
   putStrLn "maximal and infinite trace continuation semantics"
-  let cont = takeT n $ Cont.unC (Cont.absD (Direct.maxinfD e Map.empty)) id (End (at e))
+  let cont = takeT n $ Cont.unC (Cont.absD (Stateless.maxinfD e Map.empty)) id (End (at e))
   print cont
   putStrLn "-----------------------------"
   putStrLn "stateful trace semantics"
-  let stateful = NE.fromList $ NE.take (n+1) $ CESK.run e
+  let stateful = NE.fromList $ NE.take (n+1) $ Stateful.run e
   mapM_ print stateful
   putStrLn "-----------------------------"
   when (ss1 /= ss2) (error "smallstep /= defnSmallStep")
   when (ss1 /= ss3) (error "smallstep /= absSmallStep")
   when (traceLabels maxinf /= traceLabels stateless) (error "maxinf /= stateless")
-  when (traceLabels maxinf /= CESK.traceLabels stateful) (error "maxinf /= stateful")
+  when (traceLabels maxinf /= Stateful.traceLabels stateful) (error "maxinf /= stateful")
   when (traceLabels maxinf /= traceLabels cont) (error "maxinf /= cont")
 
 --  putStrLn "tracesAt 2"
---  mapM_ print $ tracesAt 2 $ takeT 10 $ Direct.maxinf e Map.empty (End (at e))
+--  mapM_ print $ tracesAt 2 $ takeT 10 $ Stateless.maxinf e Map.empty (End (at e))
 
 --  putStrLn "splitBalancedPrefix"
---  forM_ [20,19..0] $ \m -> print $ fmap fst $ splitBalancedPrefix $ dropT m $ takeT n $ Direct.maxinf e Map.empty (End (at e))
+--  forM_ [20,19..0] $ \m -> print $ fmap fst $ splitBalancedPrefix $ dropT m $ takeT n $ Stateless.maxinf e Map.empty (End (at e))
 
 --  putStrLn "absS"
---  mapM_ print $ FunnyStateless.absS $ takeT (n-1) $ FunnyStateless.maxinf e Map.empty (End (at e))
+--  mapM_ print $ TooEarlyStateless.absS $ takeT (n-1) $ TooEarlyStateless.maxinf e Map.empty (End (at e))
 
   putStr "dead: "
-  print $ Set.difference (letBoundVars (unlabel e)) $ absL Set.empty $ takeT (n-1) $ Direct.maxinf e Map.empty (End (at e))
+  print $ Set.difference (letBoundVars (unlabel e)) $ absL Set.empty $ takeT (n-1) $ Stateless.maxinf e Map.empty (End (at e))

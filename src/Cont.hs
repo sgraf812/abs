@@ -25,7 +25,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Debug.Trace
 import Text.Show (showListWith)
-import qualified Direct
+import qualified Stateless
 
 import Expr
 import ByNeed
@@ -130,7 +130,7 @@ maxinf le env p
             env' = Map.insert n c env
          in step (BindA n a c) le2.at <++> go le2 env'
 
--- | As Reynolds first proved in "On the relation between Direct and
+-- | As Reynolds first proved in "On the relation between Stateless and
 -- Continuation Semantics", we have `concD . absD = id`. In our case,
 -- parametricity also gives us `absD . concD = id` by the following
 -- observation:
@@ -180,19 +180,19 @@ maxinf le env p
 -- = C $ \k p -> k $ id (f (id p))
 -- = C $ \k p -> k (f p)
 -- = c
-absD :: Direct.D -> Cont.C
-absD (Direct.D d) = Cont.C $ \k p -> k . absTrace . d . concTrace $ p
+absD :: Stateless.D -> Cont.C
+absD (Stateless.D d) = Cont.C $ \k p -> k . absTrace . d . concTrace $ p
 
-concD :: Cont.C -> Direct.D
-concD (Cont.C c) = Direct.D $ \p -> concTrace $ c id (absTrace p)
+concD :: Cont.C -> Stateless.D
+concD (Cont.C c) = Stateless.D $ \p -> concTrace $ c id (absTrace p)
 
-absValue :: Value Direct.D -> Value Cont.C
-absValue (Direct.Fun f) = CFun (absD . f . concD)
+absValue :: Value Stateless.D -> Value Cont.C
+absValue (Stateless.Fun f) = CFun (absD . f . concD)
 
-absAction :: Action Direct.D -> Action Cont.C
+absAction :: Action Stateless.D -> Action Cont.C
 absAction = dimapAction absD concD
 
-concAction :: Action Cont.C -> Action Direct.D
+concAction :: Action Cont.C -> Action Stateless.D
 concAction = dimapAction concD absD
 
 -- | (Inductive) Assumption: (absD . concD = id), (concD . absD = id)
@@ -202,10 +202,10 @@ concAction = dimapAction concD absD
 -- = dimapTrace (absD . concD) (concD . absD) p
 -- = dimapTrace id id p
 -- = p
-absTrace :: Trace Direct.D -> Trace Cont.C
+absTrace :: Trace Stateless.D -> Trace Cont.C
 absTrace = dimapTrace absD concD
 
-concTrace :: Trace Cont.C -> Trace Direct.D
+concTrace :: Trace Cont.C -> Trace Stateless.D
 concTrace = dimapTrace concD absD
 
 class (AddrOrD d1 ~ d1, AddrOrD d2 ~ d2) => Dimappable d1 d2 where
@@ -224,9 +224,9 @@ dimapAction to from (BindA n a d) = BindA n a (to d)
 dimapAction to from (LookupA a)   = LookupA a
 dimapAction to from (UpdateA a)   = UpdateA a
 
-instance Dimappable Direct.D Cont.C where
-  dimapValue to from (Direct.Fun f) = CFun (to . f . from)
+instance Dimappable Stateless.D Cont.C where
+  dimapValue to from (Stateless.Fun f) = CFun (to . f . from)
 
-instance Dimappable Cont.C Direct.D where
-  dimapValue to from (CFun f) = Direct.Fun (to . f . from)
+instance Dimappable Cont.C Stateless.D where
+  dimapValue to from (CFun f) = Stateless.Fun (to . f . from)
 
