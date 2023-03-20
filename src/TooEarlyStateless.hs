@@ -49,7 +49,6 @@ import Debug.Trace
 import Text.Show (showListWith)
 
 import Expr
-import qualified ByNeed
 import Data.Void
 import Data.Bifunctor
 import Data.List.NonEmpty (NonEmpty)
@@ -208,16 +207,3 @@ materialiseState = go Nothing (Map.empty, Map.empty) . consifyT
 
 traceStates :: Trace D -> NonEmpty (Env, Heap)
 traceStates p = materialiseState <$> prefs p
-
-absD :: Label -> D -> ByNeed.D
-absD l (D d) = case val (d (End l)) of
-  --Just (Fun f) -> ByNeed.DFun' (absD l . f . concD l)
-  Nothing      -> ByNeed.DBot'
-
-concD :: Label -> ByNeed.D -> D
-concD l ByNeed.DBot'     = botD
-concD l (ByNeed.DFun' f) = undefined -- ⊔{ d | absD l d = V (Fun f) }
- -- Huh, concD is nto well-defined, because those ds might not form a chain.
- -- Ah, but that is just a result of the domain no longer being singleton traces {{π}}.
- -- In the proper powerset lattice we should be fine.
- -- I think we might need to start from the abstract interpreter.

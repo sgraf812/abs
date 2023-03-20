@@ -26,7 +26,6 @@ import Debug.Trace
 import Text.Show (showListWith)
 
 import Expr hiding (Fun, Trace, traceLabels)
-import qualified ByNeed
 import Data.Void
 import Data.Bifunctor
 import Data.List.NonEmpty (NonEmpty)

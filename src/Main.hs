@@ -11,7 +11,6 @@
 
 module Main (main) where
 
-import ByNeed
 import qualified Cont
 import Control.Applicative
 import Control.Monad
@@ -100,20 +99,8 @@ main = forM_ [(15,e_1), (15,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_W), (
 --  putStrLn "denotational semantics"
 --  print $ ByName.denot (unlabel e) Map.empty
   putStrLn "-----------------------------"
-  putStrLn "smallStep (transition system)"
-  let ss1 = take n $ smallStep (unlabel e)
-  mapM_ print ss1
-  putStrLn "-----------------------------"
-  putStrLn "defnSmallStep (derived from maximal trace)"
-  let ss2 = take n $ defnSmallStep (unlabel e) (Stateless.maxinf e Map.empty)
-  mapM_ print ss2
-  putStrLn "-----------------------------"
-  putStrLn "absSmallStep (derived from maximal trace semantics)"
-  let ss3 = take n $ absSmallStepEntry e
-  mapM_ print ss3
-  putStrLn "-----------------------------"
   putStrLn "maximal and infinite trace (scary maximal trace semantics)"
-  let maxinf = takeT n $ Stateless.maxinf e Map.empty (End (at e))
+  let maxinf = takeT n $ Stateless.run e Map.empty (End (at e))
   print maxinf
   putStrLn "-----------------------------"
   putStrLn "maximal and infinite trace, stateless"
@@ -121,15 +108,13 @@ main = forM_ [(15,e_1), (15,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_W), (
   print stateless
   putStrLn "-----------------------------"
   putStrLn "maximal and infinite trace continuation semantics"
-  let cont = takeT n $ Cont.unC (Cont.absD (Stateless.maxinfD e Map.empty)) id (End (at e))
+  let cont = takeT n $ Cont.unC (Cont.absD (Stateless.runD e Map.empty)) id (End (at e))
   print cont
   putStrLn "-----------------------------"
   putStrLn "stateful trace semantics"
   let stateful = NE.fromList $ NE.take (n+1) $ Stateful.run e
   mapM_ print stateful
   putStrLn "-----------------------------"
-  when (ss1 /= ss2) (error "smallstep /= defnSmallStep")
-  when (ss1 /= ss3) (error "smallstep /= absSmallStep")
   when (traceLabels maxinf /= traceLabels stateless) (error "maxinf /= stateless")
   when (traceLabels maxinf /= Stateful.traceLabels stateful) (error "maxinf /= stateful")
   when (traceLabels maxinf /= traceLabels cont) (error "maxinf /= cont")
@@ -144,4 +129,4 @@ main = forM_ [(15,e_1), (15,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_W), (
 --  mapM_ print $ TooEarlyStateless.absS $ takeT (n-1) $ TooEarlyStateless.maxinf e Map.empty (End (at e))
 
   putStr "dead: "
-  print $ Set.difference (letBoundVars (unlabel e)) $ absL Set.empty $ takeT (n-1) $ Stateless.maxinf e Map.empty (End (at e))
+  print $ Set.difference (letBoundVars (unlabel e)) $ absL Set.empty $ takeT (n-1) $ Stateless.run e Map.empty (End (at e))

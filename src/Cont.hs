@@ -11,7 +11,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
-module Cont (C(..), maxinf, absD, concD, absTrace, concTrace) where
+module Cont (C(..), run, absD, concD, absTrace, concTrace) where
 
 import Control.Applicative
 import Control.Monad
@@ -28,7 +28,6 @@ import Text.Show (showListWith)
 import qualified Stateless
 
 import Expr
-import ByNeed
 
 type instance AddrOrD C = C
 data instance Value C = CFun (C -> C)
@@ -105,8 +104,8 @@ askP f = C $ \k p -> unC (f p) k p
 (!⊥) :: Ord a => (a :-> C) -> a -> C
 env !⊥ x = Map.findWithDefault botC x env
 
-maxinf :: LExpr -> (Name :-> C) -> Trace C -> Trace C
-maxinf le env p
+run :: LExpr -> (Name :-> C) -> Trace C -> Trace C
+run le env p
   | dst p /= le.at = unC botC id p
   | otherwise      = unC (go le env) (End . dst) p
   where

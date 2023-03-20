@@ -12,7 +12,7 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
-module Stateless (D(..), Value(..), maxinf, maxinfD) where
+module Stateless (D(..), Value(..), run, runD) where
 
 import Control.Applicative
 import Control.Monad
@@ -28,7 +28,6 @@ import Debug.Trace
 import Text.Show (showListWith)
 
 import Expr
-import qualified ByNeed
 import Data.Void
 import Data.Bifunctor
 import Data.List.NonEmpty (NonEmpty)
@@ -131,8 +130,8 @@ memo a l sem = askP $ \pi ->
       update _ End{} = Nothing
   in step (LookupA a) l' >.> d >.> whenAtP returnLabel (step (UpdateA a) returnLabel)
 
-maxinfD :: LExpr -> (Name :-> D) -> D
-maxinfD le env = go le env
+runD :: LExpr -> (Name :-> D) -> D
+runD le env = go le env
   where
     (!⊥) :: Ord a => (a :-> D) -> a -> D
     env !⊥ x = Map.findWithDefault botD x env
@@ -151,18 +150,5 @@ maxinfD le env = go le env
             env' = Map.insert n d env
          in step (BindA n a d) le2.at >.> go le2 env'
 
-maxinf :: LExpr -> (Name :-> D) -> Trace D -> Trace D
-maxinf le env p = unD (maxinfD le env) p
-
-absD :: Label -> D -> ByNeed.D
-absD l (D d) = case val (d (End l)) of
-  Just (Fun f) -> ByNeed.DFun' (absD l . f . concD l)
-  Nothing      -> ByNeed.DBot'
-
-concD :: Label -> ByNeed.D -> D
-concD l ByNeed.DBot'     = botD
-concD l (ByNeed.DFun' f) = undefined -- ⊔{ d | absD l d = V (Fun f) }
- -- Huh, concD is nto well-defined, because those ds might not form a chain.
- -- Ah, but that is just a result of the domain no longer being singleton traces {{π}}.
- -- In the proper powerset lattice we should be fine.
- -- I think we might need to start from the abstract interpreter.
+run :: LExpr -> (Name :-> D) -> Trace D -> Trace D
+run le env p = unD (runD le env) p

@@ -30,7 +30,6 @@ library
                     , hedgehog
                     , lifted-async
     exposed-modules:
-        ByNeed
         Cont
         Stateless
         Stateful

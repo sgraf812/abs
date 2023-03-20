@@ -19,7 +19,6 @@ import           Control.Concurrent
 import           Control.Concurrent.Async.Lifted (race)
 
 import           Expr hiding (assert)
-import           ByNeed
 import           Stateless
 import qualified Cont
 import qualified Stateful
@@ -55,19 +54,11 @@ prop_Eq_Expr =
     e <- forAll Gen.closedExpr
     e === e
 
-prop_abs_smallstep_is_smallstep =
-  property $ do
-    e <- forAll Gen.closedExpr
-    let defn e = defnSmallStep e (maxinf (label e) Map.empty)
-    let abs e = absSmallStepEntry (label e)
-    take (sizeFactor*50) (smallStep e) === take (sizeFactor*50) (defn e)
-    take (sizeFactor*50) (smallStep e) === take (sizeFactor*50) (abs  e)
-
 prop_maxinf_maximal_trace_stuck_or_balanced =
   property $ do
     e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
     let le = label e
-    let p = maxinf le Map.empty (End le.at)
+    let p = run le Map.empty (End le.at)
     let p' = takeT (sizeFactor*100) p
     let maximal = p' == takeT (sizeFactor*101) p
     let value = val p'
@@ -88,8 +79,8 @@ prop_maxinf_stateless_is_cont =
   property $ do
     e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
     let le = label e
-    let p1 = maxinf le Map.empty (End le.at)
-    let p2 = Cont.maxinf le Map.empty (End le.at)
+    let p1 = run le Map.empty (End le.at)
+    let p2 = Cont.run le Map.empty (End le.at)
     let p1' = takeT (sizeFactor*100) p1
     let p2' = takeT (sizeFactor*100) p2
     p1' === Cont.concTrace p2'
@@ -98,7 +89,7 @@ prop_direct_cont_abs =
   property $ do
     e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
     let le = label e
-    let p = Cont.maxinf le Map.empty (End le.at)
+    let p = Cont.run le Map.empty (End le.at)
     let p' = takeT (sizeFactor*100) p
     p' === Cont.absTrace (Cont.concTrace p')
 
@@ -107,7 +98,7 @@ prop_stateful_maxinf =
     e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
     let le = label e
     let p1 = Stateful.run le
-    let p2 = maxinf le Map.empty (End le.at)
+    let p2 = run le Map.empty (End le.at)
     let p1' = NE.take (sizeFactor*100+1) p1
     let p2' = takeT (sizeFactor*100) p2
     let ignoring_dagger (Ret _,_,_,_) _ = True
@@ -119,7 +110,7 @@ prop_cacheful_maxinf =
     e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
     let le = label e
     let p1 = Cacheful.run le
-    let p2 = maxinf le Map.empty (End le.at)
+    let p2 = run le Map.empty (End le.at)
     let p1' = NE.take (sizeFactor*100+1) p1
     let p2' = takeT (sizeFactor*100) p2
     let ignoring_dagger (Ret _,_,_,_) _ = True
@@ -131,7 +122,7 @@ prop_too_early_stateless_maxinf =
     e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
     let le = label e
     let p1 = TooEarlyStateless.runInit le
-    let p2 = maxinf le Map.empty (End le.at)
+    let p2 = run le Map.empty (End le.at)
     let p1' = takeT (sizeFactor*100) p1
     let p2' = takeT (sizeFactor*100) p2
     let same_labels a b = traceLabels a == traceLabels b
