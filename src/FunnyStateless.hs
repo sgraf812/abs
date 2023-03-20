@@ -129,7 +129,7 @@ snoc sem l a = D $ \p -> let p' = (unD sem p) in p' `concatT` if dst p' /= l the
 
 memo :: Addr -> D -> D
 memo a sem = askP $ \pi -> case update a (snocifyT pi) of
-  Just (l,v)  -> D (const (ConsT l (ValA v) (End daggerLabel)))
+  Just (l,v)  -> D (const (ConsT l (ValA v) (End returnLabel)))
   Nothing -> sem
   where
     update addr (SnocT pi' a _)
@@ -171,10 +171,10 @@ run le = askP $ \p -> case le.thing of
   Lam n le' -> D $ \p ->
     let (env,_) = materialiseState p
         val = Fun (n,le'.at,env,run le')
-     in ConsT le.at (ValA val) (End daggerLabel)
+     in ConsT le.at (ValA val) (End returnLabel)
   Let n le1 le2 -> D $ \p ->
     let a = hash' p
-        d = cons (LookupA a) le1.at (snoc (memo a (run le1)) daggerLabel (UpdateA a))
+        d = cons (LookupA a) le1.at (snoc (memo a (run le1)) returnLabel (UpdateA a))
      in unD (cons (BindA n a d) le2.at (run le2)) p
   where
     lookup :: Ord a => a -> (a :-> Addr) -> (Addr :-> (Env,D)) -> (Env,D)
@@ -189,7 +189,7 @@ materialiseState = go Nothing (Map.empty, Map.empty) . consifyT
     go :: Maybe (Value D) -> (Env, Heap) -> Trace D -> (Env, Heap)
     go _      s             (End l)       = s
     go mb_val s@(env, heap) (ConsT l a t) = case a of
-      ValA val -> go (Just val) (Map.empty,heap) t
+      ValA val -> go (Just val) s t
       BindA n a d | let !env' = Map.insert n a env
         -> go Nothing (env', Map.insert a (env',d) heap) t
       LookupA a | Just (env',_d) <- Map.lookup a heap -> go Nothing (env',heap) t

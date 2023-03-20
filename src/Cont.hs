@@ -44,11 +44,11 @@ instance Show C where
 step :: Action C -> Label -> C
 step a l = C $ \k p -> ConsT (dst p) a $ k $ SnocT p a l
 
-stepDagger :: Action C -> C
-stepDagger a = C $ \k p ->
-  if dst p /= daggerLabel
+stepRet :: Action C -> C
+stepRet a = C $ \k p ->
+  if dst p /= returnLabel
     then k p
-    else ConsT daggerLabel a $ k $ SnocT p a daggerLabel
+    else ConsT returnLabel a $ k $ SnocT p a returnLabel
 
 whenAtP :: Label -> C -> C
 whenAtP l c = askP $ \p -> if l == dst p then c else botC
@@ -56,7 +56,7 @@ whenAtP l c = askP $ \p -> if l == dst p then c else botC
 memo :: Addr -> Label -> C -> C
 memo a l sem = askP $ \pi ->
   let (l', d) = case update a (snocifyT pi) of
-        Just (l', v) -> (l', step (ValA v) daggerLabel)
+        Just (l', v) -> (l', step (ValA v) returnLabel)
         Nothing      -> (l, sem)
       update addr (SnocT pi' a _)
         | UpdateA addr' <- a
@@ -64,7 +64,7 @@ memo a l sem = askP $ \pi ->
         = valT pi'
         | otherwise  = update addr pi'
       update _ End{} = Nothing
-  in step (LookupA a) l' <++> d <++> whenAtP daggerLabel (step (UpdateA a) daggerLabel)
+  in step (LookupA a) l' <++> d <++> whenAtP returnLabel (step (UpdateA a) returnLabel)
 
 --memo :: Addr -> C -> C
 --memo addr sem = askP $ \pi -> case lookup (snocifyT pi) of
@@ -123,7 +123,7 @@ maxinf le env p
           Nothing -> botC
       Lam n le' ->
         let val = CFun (\c -> App2A n c >-> le'.at <++> go le' (Map.insert n c env))
-         in step (ValA val) daggerLabel
+         in step (ValA val) returnLabel
       Let n le1 le2 -> askP $ \p ->
         let a = hash p
             c = memo a le1.at (go le1 env')

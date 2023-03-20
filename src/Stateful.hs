@@ -11,7 +11,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE TypeFamilies #-}
 
-module Stateful (D(..), DExpr(..), Trace, traceLabels, traceEnv, run, runD) where
+module Stateful (D(..), ProgPoint(..), Trace, traceLabels, traceEnv, run, runD) where
 
 import Control.Applicative
 import Control.Monad
@@ -34,13 +34,12 @@ import qualified Data.List.NonEmpty as NE
 
 orElse = flip fromMaybe
 
-type State = (DExpr, Env, Cache, Cont)
+type State = (ProgPoint (Val,Value D), Env, Cache, Cont)
 type Env = Name :-> D
-type Cache = Addr :-> Maybe D
+type Cache = Addr :-> Maybe (Val,Env,D)
 type Cont = [Frame]
 data Frame
-  = Return LExpr Env (Value D)
-  | Apply D
+  = Apply D
   | Update Addr
   deriving Show
 
@@ -54,17 +53,13 @@ type Trace = NonEmpty State
 traceLabels :: Trace -> NonEmpty Label
 traceLabels = fmap go
   where
-    go (Dagger,_,_,_) = daggerLabel
-    go (E le,_,_,_)   = le.at
+    go (Ret _,_,_,_) = returnLabel
+    go (E le,_,_,_)  = le.at
 
 traceEnv :: Trace -> NonEmpty Env
 traceEnv = fmap go
   where
     go (_,env,_,_) = env
-
-instance Show DExpr where
-  show Dagger = "‡"
-  show (E e) = show e.at
 
 srcS, dstS :: Trace -> State
 srcS = NE.head
@@ -89,13 +84,8 @@ concatS :: Trace -> Trace -> Trace
 concatS (s NE.:| t1) t2 = s NE.:| con s t1 t2
   where
     con :: State -> [State] -> Trace -> [State]
-    con s@(e,_,_,_) []      ((e',_,_,_) NE.:| t2) = assert (eqLabel e e') t2
+    con s@(e,_,_,_) []      ((e',_,_,_) NE.:| t2) = assert (eqPoint e e') t2
     con _           (s':t1) t2                    = s' : con s' t1 t2
-
-eqLabel :: DExpr -> DExpr -> Bool
-eqLabel Dagger Dagger = True
-eqLabel (E e1) (E e2) = e1.at == e2.at
-eqLabel _      _      = False
 
 -- | Empty list is Nothing (e.g., undefined), non-empty list is Just
 type MaybeSTrace = [State]
@@ -127,7 +117,7 @@ runD le = D $ \s -> case s of
       Let n le1 le2 -> step (let_ (memo le1 (go le1))) >.> go le2
 
 ret :: Value D -> PartialD
-ret v (E sv,env,cont,cache) | isVal sv = [(Dagger, Map.empty, cache, Return v : cont)]
+ret v (E sv,env,cache,cont) | isVal sv = [(Ret (sv, v),env, cache, cont)]
 ret _ _ = []
 
 var :: D
@@ -140,42 +130,36 @@ var = D $ \s@(e, env, cont,cache) ->
 memo :: LExpr -> D -> Env -> Addr -> D
 memo e d env a = step go
   where
-    go s@(DVar _,env,cache,cont) = case Map.lookup a cache of
-      Just Nothing -> unD (d >.> upd) (E e, env, cache, Update a : cont)
-      Just (Just (v,env,d)) -> unD (d >.> upd) (E v, env, cache, Update a : cont)
+    go s@(DVar _,_,cache,cont) = case Map.lookup a cache of
+      Just Nothing -> injD (d >.> step upd) (E e, env, cache, Update a : cont)
+      Just (Just (sv,env,d)) -> injD (d >.> step upd) (E sv, env, cache, Update a : cont)
       Nothing -> error ("invalid address " ++ show a)
     go s = []
-    upd s@(Dagger, env, cache, Return val env v : Update a : cont) = _
-    upd s = []
 
-var2 :: PartialD
-var2 (Dagger, env, heap, cache, Return (sv, env', v):Update a:cont)
+upd :: PartialD
+upd (Ret (sv,v), env, cache, Update a:cont)
   | isVal sv
-  , Map.null env
-  = [(Dagger, env, Map.insert a (sv,env',step d) heap, Return (sv, env', v):cont, cache)]
-  where
-    d (E sv',_,heap,cont) | sv'.at == sv.at = [(Dagger, Map.empty, heap, Return (sv, env', v):cont)]
-    d _ = []
-var2 _ = []
+  = [(Ret (sv,v), env, Map.insert a (Just (sv,env,step (ret v))) cache, cont)]
+upd _ = []
 
 app1 :: PartialD
 app1 (DApp e x, env, cache, cont) | Just d <- Map.lookup x env = [(E e, env, cache, Apply d : cont)]
 app1 _ = []
 
 app2 :: Name -> LExpr -> D -> PartialD
-app2 n e d (Dagger, env, cache, Return (Fun _) : Apply _ : cont) = [(E e, Map.insert n d env, cache, cont)]
+app2 n e d (Ret (sv,v), env, cache, Apply _ : cont) = [(E e, Map.insert n d env, cache, cont)]
 app2 n e d _ = []
 
 reduce :: D
 reduce = D go
   where
-    go s@(Dagger, _, _, Return (Fun f) : Apply d : cont) = unD (f d) s
+    go s@(Ret (sv,(Fun f)), _, _, Apply d : cont) = unD (f d) s
     go s = NE.singleton s
 
-let_ :: (Addr -> D) -> PartialD
+let_ :: (Env -> Addr -> D) -> PartialD
 let_ mk_d (DLet x e1 e2, env, cache, cont)
   | (addr,cache') <- alloc cache
-  , let env' = Map.insert x (mk_d addr) env
+  , let env' = Map.insert x (mk_d env' addr) env
   = [(E e2, env', cache', cont)]
 let_ _ _ = []
 

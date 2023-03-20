@@ -10,7 +10,7 @@
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE PatternSynonyms #-}
 
-module CESK (D(..), DExpr(..), Trace, traceLabels, traceMemory, run, runD) where
+module CESK (D(..), ProgPoint(..), Trace, traceLabels, traceMemory, run, runD) where
 
 import Control.Applicative
 import Control.Monad
@@ -33,13 +33,12 @@ import qualified Data.List.NonEmpty as NE
 
 orElse = flip fromMaybe
 
-type State = (DExpr, Env, Heap, Cont)
+type State = (ProgPoint (Val, SValue), Env, Heap, Cont)
 type Env = Name :-> Addr
 type Heap = Addr :-> (LExpr, Env, D)
 type Cont = [Frame]
 data Frame
-  = Return (Val, Env, SValue)
-  | Apply Addr
+  = Apply Addr
   | Update Addr
   deriving Show
 
@@ -51,17 +50,13 @@ type Trace = NonEmpty State
 traceLabels :: Trace -> NonEmpty Label
 traceLabels = fmap go
   where
-    go (Dagger,_,_,_) = daggerLabel
-    go (E le,_,_,_)   = le.at
+    go (Ret _,_,_,_) = returnLabel
+    go (E le,_,_,_)  = le.at
 
 traceMemory :: Trace -> NonEmpty (Env,Heap)
 traceMemory = fmap go
   where
     go (_,env,heap,_) = (env,heap)
-
-instance Show DExpr where
-  show Dagger = "‡"
-  show (E e) = show e.at
 
 srcS, dstS :: Trace -> State
 srcS = NE.head
@@ -86,13 +81,8 @@ concatS :: Trace -> Trace -> Trace
 concatS (s NE.:| t1) t2 = s NE.:| con s t1 t2
   where
     con :: State -> [State] -> Trace -> [State]
-    con s@(e,_,_,_) []      ((e',_,_,_) NE.:| t2) = assert (eqLabel e e') t2
+    con s@(e,_,_,_) []      ((e',_,_,_) NE.:| t2) = assert (eqPoint e e') t2
     con _           (s':t1) t2                    = s' : con s' t1 t2
-
-eqLabel :: DExpr -> DExpr -> Bool
-eqLabel Dagger Dagger = True
-eqLabel (E e1) (E e2) = e1.at == e2.at
-eqLabel _      _      = False
 
 -- | Empty list is Nothing (e.g., undefined), non-empty list is Just
 type MaybeSTrace = [State]
@@ -124,7 +114,7 @@ runD le = D $ \s -> case s of
       Let n le1 le2 -> step (let_ (go le1)) >.> go le2
 
 ret :: SValue -> PartialD
-ret v (E sv,env,heap,cont) | isVal sv = [(Dagger, Map.empty, heap, Return (sv, env, v) : cont)]
+ret v (E sv,env,heap,cont) | isVal sv = [(Ret (sv,v), env, heap, cont)]
 ret _ _ = []
 
 var1 :: PartialD
@@ -135,12 +125,11 @@ var1 (E (LVar x), env, heap, cont)
 var1 _ = []
 
 var2 :: PartialD
-var2 (Dagger, env, heap, Return (sv, env', v):Update a:cont)
+var2 (Ret (sv, v), env, heap, Update a:cont)
   | isVal sv
-  , Map.null env
-  = [(Dagger, env, Map.insert a (sv,env',step d) heap, Return (sv, env', v):cont)]
+  = [(Ret (sv,v), env, Map.insert a (sv,env,step d) heap, cont)]
   where
-    d (E sv',_,heap,cont) | sv'.at == sv.at = [(Dagger, Map.empty, heap, Return (sv, env', v):cont)]
+    d (E sv',env,heap,cont) | sv'.at == sv.at = [(Ret (sv,v), env, heap, cont)]
     d _ = []
 var2 _ = []
 
@@ -149,7 +138,7 @@ app1 (E (LApp e x), env, heap, cont) | Just a <- Map.lookup x env = [(E e, env, 
 app1 _ = []
 
 app2 :: PartialD
-app2 (Dagger, _, heap, Return (LLam x e, env, Fun d) : Apply a : cont)
+app2 (Ret (LLam x e, Fun d), env, heap, Apply a : cont)
   = injD d (E e, Map.insert x a env, heap, cont)
 app2 _ = []
 

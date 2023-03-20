@@ -109,8 +109,8 @@ prop_stateful_maxinf =
     let p2 = maxinf le Map.empty (End le.at)
     let p1' = NE.take (sizeFactor*100+1) p1
     let p2' = takeT (sizeFactor*100) p2
-    let ignoring_dagger (CESK.Dagger,_,_,_) _ = True
-        ignoring_dagger (CESK.E e,_,_,_)    l = e.at == l
+    let ignoring_dagger (CESK.Ret _,_,_,_) _ = True
+        ignoring_dagger (CESK.E e,_,_,_)   l = e.at == l
     diff p1' (\a b -> length a == length b && and (zipWith ignoring_dagger a b)) (NE.toList $ traceLabels p2')
 
 prop_stateless_maxinf =
@@ -131,7 +131,7 @@ prop_stateless_split_prefix =
     let le = label e
     let p = FunnyStateless.runInit le
     let pref = takeT n p
-    when (dst pref == daggerLabel) discard -- indexAtLE doesn't work for daggerLabel
+    when (dst pref == returnLabel) discard -- indexAtLE doesn't work for daggerLabel
     let suff1 = dropT n p
     let suff2 = FunnyStateless.unD (FunnyStateless.run (indexAtLE (dst pref) le)) pref
     let p1 = takeT (sizeFactor*40) suff1

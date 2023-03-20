@@ -143,8 +143,8 @@ instance Read Expr where
 
 type Label = Int
 
-daggerLabel :: Label
-daggerLabel = 0
+returnLabel :: Label
+returnLabel = 0
 
 data Labelled f = Lab
   { at :: !Label
@@ -167,8 +167,16 @@ instance Show LExpr where
       parens s = "(" ++ s ++ ")"
 
 showLabel :: Label -> String
-showLabel l | l == daggerLabel = "‡"
+showLabel l | l == returnLabel = "‡"
             | otherwise        = show l
+
+instance {-# OVERLAPS #-} Show (ProgPoint ()) where
+  show (Ret v) = "↵"
+  show (E e) = show e.at
+
+instance Show v => Show (ProgPoint v) where
+  show (Ret v) = "↵ " ++ show v
+  show (E e) = show e.at
 
 label :: Expr -> LExpr
 label (Fix e) = evalState (lab e) 1
@@ -210,9 +218,14 @@ indexAtLE l e = fromMaybe (error (show l ++ " " ++ show e)) (find e)
       Lam _ e -> find e
       Let _ e1 e2 -> find e1 <|> find e2
 
+eqPoint :: ProgPoint v -> ProgPoint v -> Bool
+eqPoint (Ret _) (Ret _) = True
+eqPoint (E e1)  (E e2)  = e1.at == e2.at
+eqPoint _       _       = False
+
 type Val = LExpr
 
-data DExpr = Dagger | E LExpr
+data ProgPoint v = Ret !v | E !LExpr
 
 pattern DVar n <- (E (LVar n))
 pattern DApp e x <- (E (LApp e x))

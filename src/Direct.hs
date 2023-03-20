@@ -120,7 +120,7 @@ step a l = D $ \p -> ConsT (dst p) a (End l)
 memo :: Addr -> Label -> D -> D
 memo a l sem = askP $ \pi ->
   let (l', d) = case update a (snocifyT pi) of
-        Just (l', v) -> (l', step (ValA v) daggerLabel)
+        Just (l', v) -> (l', step (ValA v) returnLabel)
         Nothing      -> (l, sem)
       update addr (SnocT pi' a _)
         | UpdateA addr' <- a
@@ -129,7 +129,7 @@ memo a l sem = askP $ \pi ->
         | otherwise
         = update addr pi'
       update _ End{} = Nothing
-  in step (LookupA a) l' >.> d >.> whenAtP daggerLabel (step (UpdateA a) daggerLabel)
+  in step (LookupA a) l' >.> d >.> whenAtP returnLabel (step (UpdateA a) returnLabel)
 
 maxinfD :: LExpr -> (Name :-> D) -> D
 maxinfD le env = go le env
@@ -144,7 +144,7 @@ maxinfD le env = go le env
          in step App1A le.at >.> go le env >.> apply
       Lam n le' ->
         let val = Fun (\d -> step (App2A n d) le'.at >.> go le' (Map.insert n d env))
-         in step (ValA val) daggerLabel
+         in step (ValA val) returnLabel
       Let n le1 le2 -> askP $ \p ->
         let a = hash p
             d = memo a le1.at (go le1 env')
