@@ -7,6 +7,12 @@
 {-# LANGUAGE ImpredicativeTypes #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE StandaloneKindSignatures #-}
+{-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE MonoLocalBinds #-}
 
 module Expr where
 
@@ -30,6 +36,7 @@ import Data.Char
 import GHC.Stack
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NE
+import Data.Kind
 
 assert :: HasCallStack => Bool -> a -> a
 assert True  x = x
@@ -158,7 +165,7 @@ pattern LLam x e <- (thing -> Lam x e)
 pattern LLet x e1 e2 <- (thing -> Let x e1 e2)
 
 instance Show LExpr where
-  show le = showLabel le.at ++ parens (case le.thing of
+  show le = show le.at ++ parens (case le.thing of
     App e n -> show e ++ " " ++ n
     Lam n e -> "λ" ++ n ++ ". " ++ show e
     Var n -> n
@@ -166,17 +173,17 @@ instance Show LExpr where
     where
       parens s = "(" ++ s ++ ")"
 
-showLabel :: Label -> String
-showLabel l | l == returnLabel = "‡"
-            | otherwise        = show l
+showLabel :: ProgPoint d -> String
+showLabel (Ret _) = "[↵]"
+showLabel (E e) = "[" ++ show e.at ++ "]"
 
-instance {-# OVERLAPS #-} Show (ProgPoint ()) where
-  show (Ret v) = "↵"
+instance Show (RetX d) => Show (ProgPoint d) where
+  show (Ret v) = "↵" ++ show v
   show (E e) = show e.at
 
-instance Show v => Show (ProgPoint v) where
-  show (Ret v) = "↵ " ++ show v
-  show (E e) = show e.at
+instance Eq (ProgPoint d) where
+  Ret _ == Ret _ = True
+  E e1 == E e2 = e1.at == e2.at
 
 label :: Expr -> LExpr
 label (Fix e) = evalState (lab e) 1
@@ -225,7 +232,7 @@ eqPoint _       _       = False
 
 type Val = LExpr
 
-data ProgPoint v = Ret !v | E !LExpr
+data ProgPoint d = Ret !(RetX d) | E !LExpr
 
 pattern DVar n <- (E (LVar n))
 pattern DApp e x <- (E (LApp e x))
@@ -241,53 +248,70 @@ type Addr = Int
 hash :: Trace d -> Addr
 hash = lenT
 
-type family AddrOrD d
-data family Value d
+class HasLabel s where
+  labelOf :: s -> Label
+
+instance HasLabel (Labelled l) where
+  labelOf l = l.at
+
+instance HasLabel (ProgPoint d) where
+  labelOf (Ret _) = returnLabel
+  labelOf (E e)   = e.at
+
+type family RetX d
+type family StateX d
+type family ValX d
+type family App1X d
+type family App2X d
+type family BindX d
+type family LookupX d
+type family UpdateX d
+
+data NoInfo = NI deriving Eq
+instance Show NoInfo where show _ = ""
 
 data Action d
-  = ValA !(Value d)
-  | App1A
-  | App2A !Name !(AddrOrD d) -- The Name is entirely optional and redundant with the Fun Value
-  | BindA !Name !Addr !d
-  | LookupA !Addr
-  | UpdateA !Addr
+  = ValA !(ValX d)
+  | App1A !(App1X d)
+  | App2A !(App2X d) -- !Name !(AddrOrD d) -- The Name is entirely optional and redundant with the Fun Value
+  | BindA !(BindX d) --  !Name !Addr !d
+  | LookupA !(LookupX d) -- !Addr
+  | UpdateA !(UpdateX d) -- Addr
 
--- | only compare non-d stuff
-instance Eq (Action d) where
-  ValA _ == ValA _ = True
-  App1A == App1A = True
-  App2A n1 _d1 == App2A n2 _d2 = n1 == n2
-  BindA n1 a1 _d1 == BindA n2 a2 _d2 = a1 == a2 && n1 == n2
-  LookupA a1 == LookupA a2 = a1 == a2
-  UpdateA a1 == UpdateA a2 = a1 == a2
-  _ == _ = False
+type AllActions :: (Type -> Constraint) -> Type -> Constraint
+type AllActions c d =
+  (c (ValX d), c (App1X d), c (App2X d), c (BindX d), c (LookupX d), c (UpdateX d))
 
-instance Show d => Show (Action d) where
-  show (ValA v) = "val"
-  show (LookupA a) = "look(" ++ show a ++ ")"
-  show (UpdateA a) = "upd(" ++ show a ++ ")"
-  show (App1A) = "app1"
-  show (App2A n a) = "app2(" ++ n ++ ")"
-  show (BindA n a _) = "bind(" ++ n ++ "↦" ++ show a ++ ")"
+deriving instance AllActions Eq d => Eq (Action d)
+
+instance (Show d, AllActions Show d) => Show (Action d) where
+  show a = case a of
+    ValA x -> "val" ++ show x
+    LookupA x -> "look" ++ show x
+    UpdateA x -> "upd" ++ show x
+    App1A x -> "app1" ++ show x
+    App2A x -> "app2" ++ show x
+    BindA x -> "bind" ++ show x
 
 data Trace d
-  = End !Label
-  | ConsT !Label !(Action d) (Trace d)
-  | SnocT (Trace d) !(Action d) Label
-  deriving Eq
+  = End !(StateX d)
+  | ConsT !(StateX d) !(Action d) (Trace d)
+  | SnocT (Trace d) !(Action d) !(StateX d)
+
+deriving instance (Eq (StateX d), AllActions Eq d) => Eq (Trace d)
 
 -- think of type Trace = Nu TraceF; e.g., greatest fixed-point, to allow
 -- infinite traces Haskell data types are greatest fixed-points
 
-instance Show d => Show (Trace d) where
-  show (End l) = "[" ++ showLabel l ++ "]"
-  show (ConsT l a t) = "[" ++ showLabel l ++ "]-" ++ show a ++ "->" ++ show t ++ ""
-  show (SnocT t a l) = show t ++ "-" ++ show a ++ "->[" ++ showLabel l ++ "]"
+instance (Show d, Show (StateX d), AllActions Show d) => Show (Trace d) where
+  show (End l) = show l
+  show (ConsT l a t) = show l ++ "-" ++ show a ++ "->" ++ show t ++ ""
+  show (SnocT t a l) = show t ++ "-" ++ show a ++ "->" ++ show l
 
-sameLabelsInTrace :: Trace d1 -> Trace d2 -> Bool
+sameLabelsInTrace :: (HasLabel (StateX d1), HasLabel (StateX d2)) => Trace d1 -> Trace d2 -> Bool
 sameLabelsInTrace t1 t2 = traceLabels t1 == traceLabels t2
 
-src, dst :: Trace d -> Label
+src, dst :: Trace d -> StateX d
 src (End l) = l
 src (ConsT l _ _) = l
 src (SnocT t _ _) = src t
@@ -309,12 +333,11 @@ snocifyT t = go End t
     go f (SnocT t a l) = SnocT (go f t) a l
     go f (ConsT l a t) = go (\l' -> SnocT (f l) a l') t
 
-concatT :: HasCallStack => Trace d -> Trace d -> Trace d
+concatT :: (HasCallStack, HasLabel (StateX d)) => Trace d -> Trace d -> Trace d
 concatT t1 t2 = con t1 t2
   where
-    con :: Trace d -> Trace d -> Trace d
-    con (End l) t2 = assert (l == src t2) t2
-    con (SnocT t1 a l) t2 = con t1 (assert (l == src t2) (ConsT (dst t1) a t2))
+    con (End l) t2 = assert (labelOf l == labelOf (src t2)) t2
+    con (SnocT t1 a l) t2 = con t1 (assert (labelOf l == labelOf (src t2)) (ConsT (dst t1) a t2))
     con (ConsT l a t1) t2 = ConsT l a (con t1 t2)
 
 takeT :: Int -> Trace d -> Trace d
@@ -339,34 +362,43 @@ lenT (End _) = 0
 lenT (ConsT _ _ t) = 1 + lenT t
 lenT (SnocT t _ _) = 1 + lenT t
 
-valT :: Trace d -> Maybe (Label, Value d)
+-- |
+-- prop> splitsT t = [ (dropT n t, takeT n t) | n <- [0..lenT t] ]
+splitsT :: Trace d -> NonEmpty (Trace d, Trace d)
+splitsT t = go (takeT 0 t') t'
+  where
+    t' = consifyT t
+    go pref (End l) = NE.singleton (pref, End l)
+    go pref (ConsT l a suff) = (pref, End l) `NE.cons` go (SnocT pref a l) suff
+
+valT :: Trace d -> Maybe (StateX d, ValX d)
 valT t = go (snocifyT t)
   where
     go (End _) = Nothing
     go (SnocT t a l) = case a of
       ValA v    -> Just (dst t, v)
       App1A{}   -> Nothing
-      App2A _ _ -> Nothing
-      BindA {}  -> Nothing
-      LookupA _ -> Nothing
+      App2A{}   -> Nothing
+      BindA{}   -> Nothing
+      LookupA{} -> Nothing
       UpdateA{} -> go t
     go ConsT {} = error "invalid"
 
-val :: Trace d -> Maybe (Value d)
+val :: Trace d -> Maybe (ValX d)
 val t = snd <$> valT t
 
 type (:->) = Map
 infixr :->
 
-tracesAt :: Label -> Trace d -> [Trace d]
+tracesAt :: HasLabel (StateX d) => Label -> Trace d -> [Trace d]
 tracesAt l t = case t of
-  End l' -> [t | l == l']
-  ConsT l' a t' -> [End l' | l == l'] ++ map (ConsT l' a) (tracesAt l t')
-  SnocT t' a l' -> tracesAt l t' ++ [SnocT t' a l' | l' == l]
+  End l' -> [t | l == labelOf l']
+  ConsT l' a t' -> [End l' | l == labelOf l'] ++ map (ConsT l' a) (tracesAt l t')
+  SnocT t' a l' -> tracesAt l t' ++ [SnocT t' a l' | l == labelOf l']
 
 -- | Derive the pointwise prefix trace semantics from a maximal and inifinite
 -- trace semantics (Section 6.12 of POAI).
-pointwise :: (LExpr -> Trace d -> Trace d) -> LExpr -> Trace d -> Label -> [Trace d]
+pointwise :: HasLabel (StateX d) => (LExpr -> Trace d -> Trace d) -> LExpr -> Trace d -> Label -> [Trace d]
 pointwise sem e p l = map (concatT p) $ tracesAt l $ sem e p
 
 -- | Turns a maximal finite or infinite trace into the list of its prefix
@@ -379,11 +411,17 @@ prefs t = go (consifyT t)
       ConsT l a t' -> End l `NE.cons` fmap (ConsT l a) (go t')
       SnocT{} -> undefined
 
-traceLabels :: Trace d -> NonEmpty Label
+traceLabels :: HasLabel (StateX d) => Trace d -> NonEmpty Label
 traceLabels = go . consifyT
   where
-    go (End l) = pure l
-    go (ConsT l _ t) = l `NE.cons` go t
+    go (End l) = pure (labelOf l)
+    go (ConsT l _ t) = labelOf l `NE.cons` go t
+
+traceStates :: Trace d -> NonEmpty (StateX d)
+traceStates = go . consifyT
+  where
+    go (End s) = pure s
+    go (ConsT s _ t) = s `NE.cons` go t
 
 subst :: Name -> Name -> Expr -> Expr
 subst x y (Fix e) = Fix $ case e of
@@ -418,7 +456,7 @@ freshName n h = go n
 freshAddr :: Addr :-> a -> Addr
 freshAddr h = Map.size h
 
-splitBalancedPrefix :: Show d => Trace d -> (Trace d, Maybe (Trace d))
+splitBalancedPrefix :: HasLabel (StateX d) => Show d => Trace d -> (Trace d, Maybe (Trace d))
 splitBalancedPrefix p = -- traceIt (\(r,_)->"split" ++ "\n"  ++ show (takeT 3 p) ++ "\n" ++ show (takeT 3 r)) $
   work (consifyT p)
   where
@@ -430,11 +468,11 @@ splitBalancedPrefix p = -- traceIt (\(r,_)->"split" ++ "\n"  ++ show (takeT 3 p)
       App1A{} ->
         -- we have to be extremely careful not to force mp2 too early
         let (p1, mp2) = work p
-            pref = ConsT l App1A p1
+            pref = ConsT l a p1
             (suff, mp') = case mp2 of
-              Just (ConsT l2 (App2A n d) p2) ->
+              Just (ConsT l2 (App2A x) p2) ->
                 let (p3, mp4) = work p2
-                 in (ConsT l2 (App2A n d) p3,mp4)
+                 in (ConsT l2 (App2A x) p3,mp4)
               _ -> (End (dst p1), Nothing)
          in (pref `concatT` suff,mp')
       LookupA a ->
@@ -447,14 +485,14 @@ splitBalancedPrefix p = -- traceIt (\(r,_)->"split" ++ "\n"  ++ show (takeT 3 p)
                 (ConsT l2 (UpdateA a) (End (src p2)), Just p2)
               _ -> (End (dst p1), Nothing)
          in (pref `concatT` suff,mp')
-      App2A _ _ -> (p',Nothing) -- Not balanced; one closing parens too many
+      App2A _   -> (p',Nothing) -- Not balanced; one closing parens too many
       UpdateA{} -> (p',Nothing) -- Not balanced; one closing parens too many
 
 -- | Loop indefinitely for infinite traces!
-isBalanced :: Show d => Trace d -> Bool
+isBalanced :: HasLabel (StateX d) => (Eq (Trace d), Show d) => Trace d -> Bool
 isBalanced p = case splitBalancedPrefix p of
-  (p', Just (End l)) | l == dst p -> p' == p
-  _                               -> False
+  (p', Just (End l)) | labelOf l == labelOf (dst p) -> p' == p
+  _                                                 -> False
 
 data Lifted a = Lifted !a
               | Bottom
@@ -500,12 +538,12 @@ uniqify e = evalState (go Map.empty e) Set.empty
       put (Set.insert n' s)
       pure n'
 
--- | Potential liveness abstraction
-absL :: Set Name -> Trace d -> Set Name
-absL liveAtEnd p = go Map.empty (consifyT p)
-  where
-    go env (End l) = liveAtEnd
-    go env (ConsT l a p) = case a of
-      BindA n addr _ -> go (Map.insert addr n env) p
-      LookupA addr   -> Set.insert (env Map.! addr) (go env p)
-      _              -> go env p
+---- | Potential liveness abstraction
+--absL :: Set Name -> Trace d -> Set Name
+--absL liveAtEnd p = go Map.empty (consifyT p)
+--  where
+--    go env (End l) = liveAtEnd
+--    go env (ConsT l a p) = case a of
+--      BindA n addr _ -> go (Map.insert addr n env) p
+--      LookupA addr   -> Set.insert (env Map.! addr) (go env p)
+--      _              -> go env p

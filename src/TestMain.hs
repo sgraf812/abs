@@ -25,7 +25,7 @@ import qualified Stateful
 import qualified Data.List.NonEmpty as NE
 import qualified TooEarlyStateless
 import Hedgehog.Range (constant)
-import qualified Cacheful
+import qualified DynamicEnv
 
 
 main :: IO ()
@@ -109,7 +109,7 @@ prop_cacheful_maxinf =
   property $ do
     e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
     let le = label e
-    let p1 = Cacheful.run le
+    let p1 = DynamicEnv.run le
     let p2 = run le Map.empty (End le.at)
     let p1' = NE.take (sizeFactor*100+1) p1
     let p2' = takeT (sizeFactor*100) p2
@@ -151,15 +151,15 @@ eqListBy _ _      _      = False
 dropStuffTooEarlyStateless :: (Name :-> Addr, Addr :-> (Name :-> Addr, a)) -> (Name :-> Addr, Addr :-> (Name :-> Addr))
 dropStuffTooEarlyStateless (env, heap) = (env, Map.map (\(env,_d) -> env) heap)
 
-dropStuffCacheful :: (Name :-> Addr, Addr :-> (a, Name :-> Addr, b)) -> (Name :-> Addr, Addr :-> (Name :-> Addr))
-dropStuffCacheful (env, heap) = (env, Map.map (\(_e,env,_d) -> env) heap)
+dropStuffDynamicEnv :: (Name :-> Addr, Addr :-> (a, Name :-> Addr, b)) -> (Name :-> Addr, Addr :-> (Name :-> Addr))
+dropStuffDynamicEnv (env, heap) = (env, Map.map (\(_e,env,_d) -> env) heap)
 
 prop_Stateful_materialisable_from_stateless =
   property $ do
     e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
     n <- forAll (int (constant 1 (sizeFactor*40)))
     let le = label e
-    let ful  = map dropStuffCacheful $ NE.take n $ Stateful.traceMemory $ Stateful.run le
+    let ful  = map dropStuffDynamicEnv $ NE.take n $ Stateful.traceMemory $ Stateful.run le
     let less = map dropStuffTooEarlyStateless $ NE.take n $ TooEarlyStateless.traceStates $ TooEarlyStateless.runInit le
     let eq_state (fullenv, fullheap) (lessenv, lessheap) =
           fullenv == lessenv &&

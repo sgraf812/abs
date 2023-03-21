@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE DeriveFunctor #-}
@@ -19,7 +20,7 @@
 --
 -- I tried pushing the lookup and update transitions to the Var case, as for
 -- Stateful. But that needs to store the start label alongside the expression
--- bound in the heap, e.g., `Heap = Addr :-> (Label, Env, D)`, at which point
+-- bound in the heap, e.g., `Heap = Addr :-> (ProgPoint D, Env, D)`, at which point
 -- we can just write `Heap = Addr :-> (LExpr, Env, D)` and we have the
 -- actual Stateful heap (modulo abstraction of D). Then Update transitions must
 -- carry the D as well as the LExpr it denotes, perhaps even the Env.
@@ -33,7 +34,7 @@
 -- environment as state, a truly stateless trace semantics. Other than that,
 -- it's neither /the/ stateless trace semantics associated to Stateful nor is it
 -- as simple as (and as thus useful as) the "Stateless" semantics.
-module TooEarlyStateless (D(..), Value(..), runInit, run, traceStates) where
+module TooEarlyStateless (D(..), Value(..), runInit, run, materialiseStates) where
 
 import Control.Applicative
 import Control.Monad
@@ -59,18 +60,6 @@ infixl 1 `orElse`
 type Env = Name :-> Addr
 type Heap = Addr :-> (Env, D)
 
-type instance AddrOrD D = Addr
-newtype instance Value D = Fun (Name,Label,Env,D)
-
-instance Show (Value D) where
-  show (Fun _) = "fun"
-
-instance Eq (Value D) where
-  _ == _ = True
-
-instance Ord (Value D) where
-  compare _ _ = EQ
-
 -- | Finite intialisation trace to infinite or maximal finite trace.
 --
 -- This type is actually the subtype of `Trace -> Trace` for which every
@@ -92,48 +81,57 @@ instance Ord (Value D) where
 -- values do at least another step in our semantics.
 --
 newtype D = D { unD :: Trace D -> Trace D }
+instance Eq D where _ == _ = True
+instance Show D where show _ = "D"
+
+newtype Value = Fun (Name,LExpr,Env,D)
+instance Eq Value where _ == _ = True
+instance Show Value where show (Fun _) = "fun"
+
+--
+-- * Action instantiation
+--
+
+type instance StateX D = ProgPoint D
+type instance RetX D = NoInfo
+type instance App1X D = NoInfo
+type instance ValX D = Value
+
+type instance BindX D = BindInfo
+data BindInfo = BI { name :: !Name, addr :: !Addr, denot :: !D } deriving Eq
+instance Show BindInfo where show bi = "(" ++ bi.name ++ "↦" ++ show bi.addr ++ ")"
+
+type instance LookupX D = LookupInfo
+data LookupInfo = LI { addr :: !Addr } deriving Eq
+instance Show LookupInfo where show li = "(" ++ show li.addr ++ ")"
+
+type instance UpdateX D = UpdateInfo
+data UpdateInfo = UI { addr :: !Addr } deriving Eq
+instance Show UpdateInfo where show ui = "(" ++ show ui.addr ++ ")"
+
+type instance App2X D = App2Info
+data App2Info = A2I { name :: !Name, addr :: !Addr } deriving Eq
+instance Show App2Info where show ai = "(" ++ show ai.name ++ "↦" ++ show ai.addr ++ ")"
 
 -- | The bottom element of the partial pointwise prefix ordering on `D`.
 botD :: D
 botD = D (\p -> End (dst p))
 
--- | The partial pointwise prefix order. Can't compute :(
-leqD :: D -> D -> Bool
-leqD d1 d2 = forall (\p -> unD d1 p `isPrefixOf` unD d2 p)
-  where
-    forall f = undefined -- would need to iterate over all Traces
-    t1 `isPrefixOf` t2 = case (consifyT t1, consifyT t2) of
-      (End l, ConsT l' _ _) -> l == l'
-      (ConsT l _ t, ConsT l' _ t') -> l == l' && t1 `isPrefixOf` t2
-      (_,_) -> False
-
--- | The pairwise lub on ordered `D`s. Undefined everywhere else
-lubD :: D -> D -> D
-lubD d1 d2 = if d1 `leqD` d2 then d2 else d1
-
-instance Eq D where
-  _ == _ = True
-
-instance Ord D where
-  compare _ _ = EQ
-
-instance Show D where
-  show _ = "D"
-
-cons :: Action D -> Label -> D -> D
+cons :: Action D -> ProgPoint D -> D -> D
 cons a l sem = D $ \p -> ConsT (dst p) a $ unD sem $ SnocT p a l
 
-snoc :: D -> Label -> Action D -> D
+snoc :: D -> ProgPoint D -> Action D -> D
 snoc sem l a = D $ \p -> let p' = (unD sem p) in p' `concatT` if dst p' /= l then End (dst p') else ConsT l a (End l)
 
 memo :: Addr -> D -> D
 memo a sem = askP $ \pi -> case update a (snocifyT pi) of
-  Just (l,v)  -> D (const (ConsT l (ValA v) (End returnLabel)))
+  Just (l,v)  -> D (const (ConsT l (ValA v) (End (Ret NI))))
   Nothing -> sem
   where
+    update :: Addr -> Trace D -> Maybe (ProgPoint D, Value)
     update addr (SnocT pi' a _)
-      | UpdateA addr' <- a
-      , addr == addr'
+      | UpdateA ai <- a
+      , addr == ai.addr
       ---, trace ("found(" ++ show pk ++ "): " ++ show pb) True
       = valT pi'
       | otherwise     = update addr pi'
@@ -146,11 +144,11 @@ askP :: (Trace D -> D) -> D
 askP f = D $ \p -> unD (f p) p
 
 runInit :: LExpr -> Trace D
-runInit le = unD (run le) (End le.at)
+runInit le = unD (run le) (End (E le))
 
 run :: LExpr -> D
 run le = askP $ \p -> case le.thing of
-  _ | dst p /= le.at -> botD
+  _ | dst p /= E le -> botD
   Var n ->
     let (env,heap) = materialiseState p
         (env',d) = lookup n env heap
@@ -160,21 +158,21 @@ run le = askP $ \p -> case le.thing of
     let (env,heap) = materialiseState p
      in case Map.lookup n env of
        Just a ->
-        let p2 = unD (cons App1A le.at (run le)) p
+        let p2 = unD (cons (App1A NI) (E le) (run le)) p
             p2' = concatT p p2
          in concatT p2 $ case val p2' of
-              Just (Fun (x,l,env',f)) -> unD (cons (App2A x a) l f) p2'
+              Just (Fun (x,l,env',f)) -> unD (cons (App2A (A2I x a)) (E l) f) p2'
               Nothing      -> unD botD p2' -- Stuck! Can happen in an open program
                                            -- Or with data types
        Nothing -> unD botD p
   Lam n le' -> D $ \p ->
     let (env,_) = materialiseState p
-        val = Fun (n,le'.at,env,run le')
-     in ConsT le.at (ValA val) (End returnLabel)
+        val = Fun (n,le',env,run le')
+     in ConsT (E le) (ValA val) (End (Ret NI))
   Let n le1 le2 -> D $ \p ->
     let a = hash' p
-        d = cons (LookupA a) le1.at (snoc (memo a (run le1)) returnLabel (UpdateA a))
-     in unD (cons (BindA n a d) le2.at (run le2)) p
+        d = cons (LookupA (LI a)) (E le1) (snoc (memo a (run le1)) (Ret NI) (UpdateA (UI a)))
+     in unD (cons (BindA (BI n a d)) (E le2) (run le2)) p
   where
     lookup :: Ord a => a -> (a :-> Addr) -> (Addr :-> (Env,D)) -> (Env,D)
     lookup x env heap = Map.lookup x env >>= (heap Map.!?) `orElse` (Map.empty, botD)
@@ -185,15 +183,15 @@ hash' p = Map.size $ snd $ materialiseState p
 materialiseState :: Trace D -> (Env, Heap)
 materialiseState = go Nothing (Map.empty, Map.empty) . consifyT
   where
-    go :: Maybe (Value D) -> (Env, Heap) -> Trace D -> (Env, Heap)
+    go :: Maybe Value -> (Env, Heap) -> Trace D -> (Env, Heap)
     go _      s             (End l)       = s
     go mb_val s@(env, heap) (ConsT l a t) = case a of
       ValA val -> go (Just val) s t
-      BindA n a d | let !env' = Map.insert n a env
-        -> go Nothing (env', Map.insert a (env',d) heap) t
-      LookupA a | Just (env',_d) <- Map.lookup a heap -> go Nothing (env',heap) t
-      App1A     -> go Nothing s t
-      UpdateA a | Just (Fun (_x,_l,env',_d)) <- mb_val -> go mb_val (env,Map.adjust (first (const env')) a heap) t
+      BindA b | let !env' = Map.insert b.name b.addr env
+        -> go Nothing (env', Map.insert b.addr (env',b.denot) heap) t
+      LookupA a | Just (env',_d) <- Map.lookup a.addr heap -> go Nothing (env',heap) t
+      App1A _   -> go Nothing s t
+      UpdateA a | Just (Fun (_x,_l,env',_d)) <- mb_val -> go mb_val (env,Map.adjust (first (const env')) a.addr heap) t
         -- The d stored in the heap is still accurate as it looks for Update
         -- actions in the init trace. Theoretically, we could cough up a d based
         -- on _d from the value, though...
@@ -203,7 +201,7 @@ materialiseState = go Nothing (Map.empty, Map.empty) . consifyT
         -- form `let a = x in λy.a`, then we have to bind the `a` in the value
         -- `λy.a`. Perhaps it would be simpler also to update the d rather than
         -- jsut mess with the env'.
-      App2A _n a | Just (Fun (x,_l,env,_d)) <- mb_val -> go Nothing (Map.insert x a env, heap) t
+      App2A a | Just (Fun (x,_l,env,_d)) <- mb_val -> go Nothing (Map.insert x a.addr env, heap) t
 
-traceStates :: Trace D -> NonEmpty (Env, Heap)
-traceStates p = materialiseState <$> prefs p
+materialiseStates :: Trace D -> NonEmpty (Env, Heap)
+materialiseStates p = materialiseState <$> prefs p

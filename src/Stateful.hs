@@ -9,8 +9,9 @@
 {-# LANGUAGE ImpredicativeTypes #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE TypeFamilies #-}
 
-module Stateful (D(..), ProgPoint(..), Trace, traceLabels, traceMemory, run, runD) where
+module Stateful (D(..), ProgPoint(..), Trace, traceMemory, run, runD) where
 
 import Control.Applicative
 import Control.Monad
@@ -24,7 +25,7 @@ import qualified Data.Set as Set
 import Debug.Trace
 import Text.Show (showListWith)
 
-import Expr hiding (Fun, Trace, traceLabels)
+import Expr
 import Data.Void
 import Data.Bifunctor
 import Data.List.NonEmpty (NonEmpty)
@@ -32,7 +33,6 @@ import qualified Data.List.NonEmpty as NE
 
 orElse = flip fromMaybe
 
-type State = (ProgPoint (Val, SValue), Env, Heap, Cont)
 type Env = Name :-> Addr
 type Heap = Addr :-> (LExpr, Env, D)
 type Cont = [Frame]
@@ -40,64 +40,60 @@ data Frame
   = Apply Addr
   | Update Addr
   deriving Show
+type State = (ProgPoint D, Env, Heap, Cont)
 
-newtype D = D { unD :: State -> Trace }
-data SValue = Fun D deriving Show
+instance HasLabel State where
+  labelOf (p,_,_,_) = labelOf p
 
-type Trace = NonEmpty State
+newtype D = D { unD :: State -> Trace D }
+instance Eq D where _ == _ = True
+instance Show D where show _ = "D"
 
-traceLabels :: Trace -> NonEmpty Label
-traceLabels = fmap go
+data Value = Fun D
+instance Eq Value where _ == _ = True
+instance Show Value where show (Fun _) = "fun"
+
+type instance RetX D = (Val,Value)
+type instance StateX D = State
+type instance ValX D = NoInfo
+type instance App1X D = NoInfo
+type instance App2X D = NoInfo
+type instance BindX D = NoInfo
+type instance LookupX D = NoInfo
+type instance UpdateX D = NoInfo
+
+traceLabels :: Trace D -> NonEmpty Label
+traceLabels = fmap go . traceStates
   where
     go (Ret _,_,_,_) = returnLabel
     go (E le,_,_,_)  = le.at
 
-traceMemory :: Trace -> NonEmpty (Env,Heap)
-traceMemory = fmap go
+traceMemory :: Trace D -> NonEmpty (Env,Heap)
+traceMemory = fmap go . traceStates
   where
     go (_,env,heap,_) = (env,heap)
 
-srcS, dstS :: Trace -> State
-srcS = NE.head
-dstS = NE.last
-
-
 -- | The bottom element of the partial pointwise prefix ordering on `D`.
 botD :: D
-botD = D (\p -> pure p)
+botD = D (\p -> End p)
 
-instance Eq D where
-  _ == _ = True
-
-instance Ord D where
-  compare _ _ = EQ
-
-instance Show D where
-  show _ = "D"
-
-
-concatS :: Trace -> Trace -> Trace
-concatS (s NE.:| t1) t2 = s NE.:| con s t1 t2
-  where
-    con :: State -> [State] -> Trace -> [State]
-    con s@(e,_,_,_) []      ((e',_,_,_) NE.:| t2) = assert (eqPoint e e') t2
-    con _           (s':t1) t2                    = s' : con s' t1 t2
-
--- | Empty list is Nothing (e.g., undefined), non-empty list is Just
-type MaybeSTrace = [State]
-
-type PartialD = State -> MaybeSTrace
+type PartialD = State -> Maybe (Trace D)
 
 injD :: D -> PartialD
-injD (D d) = \s -> NE.toList (d s)
+injD (D d) = \s -> Just (d s)
+
+cons :: State -> Trace D -> Trace D
+cons s t = ConsT s (ValA NI) t
 
 step :: PartialD -> D
-step fun = D $ \s -> s NE.:| fun s
+step fun = D $ \s -> case fun s of
+  Nothing -> End s
+  Just t  -> cons s t
 
 (>.>) :: D -> D -> D
-D d1 >.> D d2 = D $ \s -> let p = d1 s in p `concatS` d2 (dstS p)
+D d1 >.> D d2 = D $ \s -> let p = d1 s in p `concatT` d2 (dst p)
 
-run :: LExpr -> Trace
+run :: LExpr -> Trace D
 run le = unD (runD le) (E le,Map.empty,Map.empty,[])
 
 runD :: LExpr -> D
@@ -112,39 +108,39 @@ runD le = D $ \s -> case s of
       App le' n -> step app1 >.> go le' >.> step app2
       Let n le1 le2 -> step (let_ (go le1)) >.> go le2
 
-ret :: SValue -> PartialD
-ret v (E sv,env,heap,cont) | isVal sv = [(Ret (sv,v), env, heap, cont)]
-ret _ _ = []
+ret :: Value -> PartialD
+ret v (E sv,env,heap,cont) | isVal sv = Just (End (Ret (sv,v), env, heap, cont))
+ret _ _ = Nothing
 
 var1 :: PartialD
 var1 (E (LVar x), env, heap, cont)
   | Just a <- Map.lookup x env
   , Just (e, env', d) <- Map.lookup a heap
   = injD d (E e, env', heap, Update a:cont)
-var1 _ = []
+var1 _ = Nothing
 
 var2 :: PartialD
 var2 (Ret (sv, v), env, heap, Update a:cont)
   | isVal sv
-  = [(Ret (sv,v), env, Map.insert a (sv,env,step d) heap, cont)]
+  = Just (End (Ret (sv,v), env, Map.insert a (sv,env,step d) heap, cont))
   where
-    d (E sv',env,heap,cont) | sv'.at == sv.at = [(Ret (sv,v), env, heap, cont)]
-    d _ = []
-var2 _ = []
+    d (E sv',env,heap,cont) | sv'.at == sv.at = Just (End (Ret (sv,v), env, heap, cont))
+    d _ = Nothing
+var2 _ = Nothing
 
 app1 :: PartialD
-app1 (E (LApp e x), env, heap, cont) | Just a <- Map.lookup x env = [(E e, env, heap, Apply a : cont)]
-app1 _ = []
+app1 (E (LApp e x), env, heap, cont) | Just a <- Map.lookup x env = Just (End (E e, env, heap, Apply a : cont))
+app1 _ = Nothing
 
 app2 :: PartialD
 app2 (Ret (LLam x e, Fun d), env, heap, Apply a : cont)
   = injD d (E e, Map.insert x a env, heap, cont)
-app2 _ = []
+app2 _ = Nothing
 
 let_ :: D -> PartialD
 let_ d1 (E (LLet x e1 e2), env,heap,cont)
   | let a = freshAddr heap
   , let env' = Map.insert x a env
-  = [(E e2, env', Map.insert a (e1, env', d1) heap, cont)]
-let_ _ _ = []
+  = Just (End (E e2, env', Map.insert a (e1, env', d1) heap, cont))
+let_ _ _ = Nothing
 

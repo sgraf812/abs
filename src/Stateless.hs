@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE DeriveFunctor #-}
@@ -11,8 +12,9 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE MonoLocalBinds #-}
 
-module Stateless (D(..), Value(..), run, runD) where
+module Stateless (D(..), Value(Fun), run, runD) where
 
 import Control.Applicative
 import Control.Monad
@@ -31,21 +33,12 @@ import Expr
 import Data.Void
 import Data.Bifunctor
 import Data.List.NonEmpty (NonEmpty)
+import qualified Data.List.NonEmpty as NE
 import GHC.Stack
+import qualified Stateful
+import qualified Stackless
 
 orElse = flip fromMaybe
-
-type instance AddrOrD D = D
-data instance Value D = Fun (D -> D)
-
-instance Show (Value D) where
-  show (Fun _) = "fun"
-
-instance Eq (Value D) where
-  _ == _ = True
-
-instance Ord (Value D) where
-  compare _ _ = EQ
 
 -- | Finite intialisation trace to infinite or maximal finite trace.
 --
@@ -68,33 +61,42 @@ instance Ord (Value D) where
 -- values do at least another step in our semantics.
 --
 newtype D = D { unD :: Trace D -> Trace D }
+instance Eq D where _ == _ = True
+instance Show D where show _ = "D"
+
+newtype Value = Fun (D -> D)
+instance Eq Value where _ == _ = True
+instance Show Value where show (Fun _) = "fun"
+
+--
+-- * Action instantiation
+--
+
+type instance StateX D = ProgPoint D
+type instance RetX D = NoInfo
+type instance App1X D = NoInfo
+type instance ValX D = Value
+
+type instance BindX D = BindInfo
+data BindInfo = BI { name :: !Name, rhs :: !LExpr, addr :: !Addr, denot :: !D }
+instance Eq BindInfo where bi1 == bi2 = bi1.name == bi2.name && bi1.addr == bi2.addr
+instance Show BindInfo where show bi = "(" ++ bi.name ++ "↦" ++ show bi.addr ++ ")"
+
+type instance LookupX D = LookupInfo
+data LookupInfo = LI { addr :: !Addr } deriving Eq
+instance Show LookupInfo where show li = "(" ++ show li.addr ++ ")"
+
+type instance UpdateX D = UpdateInfo
+data UpdateInfo = UI { addr :: !Addr } deriving Eq
+instance Show UpdateInfo where show ui = "(" ++ show ui.addr ++ ")"
+
+type instance App2X D = App2Info
+data App2Info = A2I { name :: !Name, denot :: !D } deriving Eq
+instance Show App2Info where show ai = "(" ++ show ai.name ++ ")"
 
 -- | The bottom element of the partial pointwise prefix ordering on `D`.
 botD :: D
 botD = D (\p -> End (dst p))
-
--- | The partial pointwise prefix order. Can't compute :(
-leqD :: D -> D -> Bool
-leqD d1 d2 = forall (\p -> unD d1 p `isPrefixOf` unD d2 p)
-  where
-    forall f = undefined -- would need to iterate over all Traces
-    t1 `isPrefixOf` t2 = case (consifyT t1, consifyT t2) of
-      (End l, ConsT l' _ _) -> l == l'
-      (ConsT l _ t, ConsT l' _ t') -> l == l' && t1 `isPrefixOf` t2
-      (_,_) -> False
-
--- | The pairwise lub on ordered `D`s. Undefined everywhere else
-lubD :: D -> D -> D
-lubD d1 d2 = if d1 `leqD` d2 then d2 else d1
-
-instance Eq D where
-  _ == _ = True
-
-instance Ord D where
-  compare _ _ = EQ
-
-instance Show D where
-  show _ = "D"
 
 concatD :: HasCallStack => D -> D -> D
 concatD (D d1) (D d2) = D $ \p -> let p1 = d1 p in p1 `concatT` d2 (p `concatT` p1)
@@ -110,25 +112,32 @@ whenP :: Maybe a -> (a -> D) -> D
 whenP Nothing  _ = botD
 whenP (Just a) d = d a
 
-whenAtP :: Label -> D -> D
-whenAtP l d = askP $ \p -> if l == dst p then d else botD
+whenAtP :: ProgPoint D -> D -> D
+whenAtP l d = askP $ \p -> if labelOf l == labelOf (dst p) then d else botD
 
-step :: Action D -> Label -> D
+step :: Action D -> ProgPoint D -> D
 step a l = D $ \p -> ConsT (dst p) a (End l)
 
-memo :: Addr -> Label -> D -> D
-memo a l sem = askP $ \pi ->
-  let (l', d) = case update a (snocifyT pi) of
-        Just (l', v) -> (l', step (ValA v) returnLabel)
-        Nothing      -> (l, sem)
+stepm :: ProgPoint D -> Action D -> ProgPoint D -> D
+stepm l1 a l2 = whenAtP l1 (step a l2)
+
+memo :: Addr -> ProgPoint D -> D -> D
+memo a p sem = askP $ \pi ->
+  let (p', d) = case update a (snocifyT pi) of
+        Just (p', v) -> (p', step (ValA v) (Ret NI))
+        Nothing      -> (p, sem)
       update addr (SnocT pi' a _)
-        | UpdateA addr' <- a
-        , addr == addr'
+        | UpdateA ui <- a :: Action D
+        , addr == ui.addr
         = valT pi'
         | otherwise
         = update addr pi'
       update _ End{} = Nothing
-  in step (LookupA a) l' >.> d >.> whenAtP returnLabel (step (UpdateA a) returnLabel)
+  in wrapLookup a p' d
+
+wrapLookup :: Addr -> ProgPoint D -> D -> D
+wrapLookup a p d =
+  step (LookupA (LI a)) p >.> d >.> stepm (Ret NI) (UpdateA (UI a)) (Ret NI)
 
 runD :: LExpr -> (Name :-> D) -> D
 runD le env = go le env
@@ -136,19 +145,123 @@ runD le env = go le env
     (!⊥) :: Ord a => (a :-> D) -> a -> D
     env !⊥ x = Map.findWithDefault botD x env
     go :: LExpr -> (Name :-> D) -> D
-    go le !env = whenAtP le.at $ case le.thing of
+    go le !env = whenAtP (E le) $ case le.thing of
       Var n -> env !⊥ n
       App le n -> whenP (Map.lookup n env) $ \d ->
         let apply = askP $ \p -> whenP (val p) $ \(Fun f) -> f d
-         in step App1A le.at >.> go le env >.> apply
+         in step (App1A NI) (E le) >.> go le env >.> apply
       Lam n le' ->
-        let val = Fun (\d -> step (App2A n d) le'.at >.> go le' (Map.insert n d env))
-         in step (ValA val) returnLabel
+        let val = Fun (\d -> step (App2A (A2I n d)) (E le') >.> go le' (Map.insert n d env))
+         in step (ValA val) (Ret NI)
       Let n le1 le2 -> askP $ \p ->
         let a = hash p
-            d = memo a le1.at (go le1 env')
+            d = memo a (E le1) (go le1 env')
             env' = Map.insert n d env
-         in step (BindA n a d) le2.at >.> go le2 env'
+         in step (BindA (BI n le1 a d)) (E le2) >.> go le2 env'
 
 run :: LExpr -> (Name :-> D) -> Trace D -> Trace D
 run le env p = unD (runD le env) p
+
+absStackD :: Stateless.D -> Stackless.D
+absStackD (Stateless.D d) = Stackless.D $
+  \s -> absStackTrace (d (concStackState s))
+
+concStackD :: Stackless.D -> Stateless.D
+concStackD (Stackless.D d) = D $ \p -> concStackTrace (d (dst (absStackTrace p)))
+
+absStackV :: Stateless.Value -> Stackless.Value
+absStackV (Fun f) = Stackless.Fun (absStackD . f . concStackD)
+
+concStackV :: Stackless.Value -> Stateless.Value
+concStackV (Stackless.Fun f) = Fun (concStackD . f . absStackD)
+
+concStackState :: Stackless.State -> Trace D
+concStackState (Ret (sv,_), heap) = go (End (E sv)) (Map.toList heap)
+  where
+    dummyLabel = -1
+    go inner ((a,(e,d)):rest) = go (ConsT (E (Lab dummyLabel (Var "x"))) (BindA (BI "x" e a (concStackD d)) :: Action D) inner) rest
+
+concStackTrace :: Trace Stackless.D -> Trace D
+concStackTrace t = go t
+  where
+    forget_ret (Ret _) = Ret NI
+    forget_ret (E e) = E e
+    go (End (p,heap)) = End (forget_ret p)
+    go (ConsT (p,heap) _ rest) =
+      ConsT (forget_ret p) a (go rest)
+          where
+            a = case p of
+              Ret (sv,v) -> _
+              E e -> case e.thing of
+                Var n -> _
+
+absStackTrace :: Trace Stateless.D -> Trace Stackless.D
+absStackTrace p = go Map.empty Map.empty Map.empty (toList (splitsT p))
+  where
+    mk_state_at :: ProgPoint D -> Trace Stateless.D -> Stackless.Heap -> Stackless.State
+    mk_state_at p pref heap
+      | Ret NI <- p, let Just (E sv,v) = valT pref
+      = (Ret (sv, absStackV v), heap)
+      | E e <- p
+      = (E e, heap)
+    go :: (Addr :-> Stackless.Env) -> Stackless.Env -> Stackless.Heap -> [(Trace Stateless.D,Trace Stateless.D)] -> Trace Stackless.D
+    go envs env heap ((pref,suff):rest) = case suff of
+      End l -> End (mk_state_at l pref heap)
+      ConsT l a p -> mk_state_at l pref heap `Stackless.cons` case a of
+        BindA bi ->
+          let env' = Map.insert bi.name (absStackD bi.denot) env
+              envs' = Map.insert bi.addr env' envs
+              heap' = Map.insert bi.addr (bi.rhs, absStackD bi.denot)
+           in go envs' env' heap rest
+        LookupA a -> go envs (envs Map.! a.addr) heap rest
+        UpdateA a ->
+          let Just (E sv,v) = valT pref
+              d = wrapLookup a.addr (E sv) (step (ValA v) (Ret NI))
+           in go (Map.insert a.addr env envs) env (Map.insert a.addr (sv, absStackD d) heap) rest
+        ValA v ->
+          go envs env heap rest
+        App1A _ ->
+          go envs env heap rest
+        App2A ai ->
+          go envs (Map.insert ai.name (absStackD ai.denot) env) heap rest
+
+--config :: Show d => Expr -> Trace d -> [Configuration]
+--config e p0 = yield (consifyT p0) init
+--  where
+--    init = (Map.empty, e, [])
+--    traceIt f res = trace (f res) res
+--    yield t c = c : go t c
+--    go (End l) _ = []
+--    go (ConsT l a p) c0@(h, Fix e, s) = -- trace ("her " ++ unlines [show c0, show a, show p]) $
+--      case a of
+--        ValA _ -> go p c0 -- No corresponding small-step transition
+--        BindA{}      | Let n e1 e2 <- e ->
+--          let n' = freshName n h
+--              e1' = subst n n' e1
+--              e2' = subst n n' e2
+--              c1 = (Map.insert n' e1' h, e2', s)
+--           in yield p c1
+--        App1A        | App e n <- e ->
+--          let c1 = (h, e, Apply n:s)
+--              (p1,~(Just (ConsT l App2A{} p2))) = splitBalancedPrefix p
+--              cs1 = yield p1 c1
+--              (h',Fix (Lam m eb),Apply n':s') = last cs1
+--              c2 = (h', subst m n' eb, s')
+--              cs2 = yield p2 c2
+--           in -- trace ("app1: " ++ unlines [show c1,show p, show p1, show p2]) $
+--              cs1 ++ cs2
+--
+--        LookupA _    | Var n <- e ->
+--          let c1 = (h, h Map.! n, Update n:s)
+--              (p1,mb_p2) = splitBalancedPrefix p
+--              cs1 = yield p1 c1
+--              (h',e',Update n':s') = last cs1
+--              c2 = (Map.insert n' e' h', e', s')
+--              cs2 = case mb_p2 of
+--                Just (ConsT l UpdateA{} p2) -> yield p2 c2
+--                _                           -> []
+--           in -- trace ("look: " ++ show c1 ++ show (takeT 4 p1)) $
+--              cs1 ++ cs2
+--
+--        _ -> -- trace (show l ++ " " ++ show a ++ " " ++ show (Fix e) ++ "\n"  ++ show (takeT 20 p0) ++ "\n" ++ show (takeT 20 p))
+--             []

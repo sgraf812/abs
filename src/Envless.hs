@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE DeriveFunctor #-}
@@ -25,7 +26,7 @@ import qualified Data.Set as Set
 import Debug.Trace
 import Text.Show (showListWith)
 
-import Expr hiding (Fun, Trace, traceLabels)
+import Expr
 import Data.Void
 import Data.Bifunctor
 import Data.List.NonEmpty (NonEmpty)
@@ -36,76 +37,76 @@ orElse = flip fromMaybe
 -- | How we go from Stateful to this state
 --
 -- 1. Move Lookup into Env; have Env = Name :-> D and let its action look into
---    the Cache, getting rid of the Heap. Requires a bit of tricky setup in let_
+--    the Heap. Requires a bit of tricky setup in let_
 -- 2. Move the Env to meta level
 -- 3. Realise that we can now get rid of the stack, since everything happens
 --    on the meta call stack
-type State = (ProgPoint (Val,Value D), Cache, Cont)
+-- 4. Materialise the state as needed during memo
+type State = (ProgPoint D, Heap, Cont)
 type Env = Name :-> D
-type Cache = Addr :-> Maybe (Val,D)
+type Heap = Addr :-> (LExpr,D)
 type Cont = [Frame]
 data Frame
   = Apply D
   | Update Addr
   deriving Show
 
-newtype D = D { unD :: State -> Trace }
-newtype instance Value D = Fun (D -> D)
-instance Show (Value D) where
-  show (Fun _) = "fun"
+instance HasLabel State where
+  labelOf (p,_,_) = labelOf p
 
-type Trace = NonEmpty State
+newtype D = D { unD :: State -> Trace D }
+instance Eq D where _ == _ = True
+instance Show D where show _ = "D"
+newtype Value = Fun (D -> D)
+instance Eq Value where _ == _ = True
+instance Show Value where show (Fun _) = "fun"
 
-traceLabels :: Trace -> NonEmpty Label
-traceLabels = fmap go
-  where
-    go (Ret _,_,_) = returnLabel
-    go (E le,_,_)  = le.at
+--
+-- * Action instantiation
+--
 
-srcS, dstS :: Trace -> State
-srcS = NE.head
-dstS = NE.last
+type instance StateX D = State
+type instance RetX D = (Val,Value)
+type instance App1X D = NoInfo
+type instance ValX D = NoInfo
 
+type instance BindX D = BindInfo
+data BindInfo = BI { name :: !Name, addr :: !Addr, denot :: !D } deriving Eq
+instance Show BindInfo where show bi = "(" ++ bi.name ++ "↦" ++ show bi.addr ++ ")"
+
+type instance LookupX D = LookupInfo
+data LookupInfo = LI { addr :: !Addr } deriving Eq
+instance Show LookupInfo where show li = "(" ++ show li.addr ++ ")"
+
+type instance UpdateX D = UpdateInfo
+data UpdateInfo = UI { addr :: !Addr } deriving Eq
+instance Show UpdateInfo where show ui = "(" ++ show ui.addr ++ ")"
+
+type instance App2X D = App2Info
+data App2Info = A2I { name :: !Name, addr :: !Addr } deriving Eq
+instance Show App2Info where show ai = "(" ++ show ai.name ++ "↦" ++ show ai.addr ++ ")"
 
 -- | The bottom element of the partial pointwise prefix ordering on `D`.
 botD :: D
-botD = D (\p -> pure p)
+botD = D (\p -> End p)
 
-instance Eq D where
-  _ == _ = True
-
-instance Ord D where
-  compare _ _ = EQ
-
-instance Show D where
-  show _ = "D"
-
-
-concatS :: Trace -> Trace -> Trace
-concatS (s NE.:| t1) t2 = s NE.:| con s t1 t2
-  where
-    con :: State -> [State] -> Trace -> [State]
-    con s@(e,_,_) []      ((e',_,_) NE.:| t2) = assert (eqPoint e e') t2
-    con _         (s':t1) t2                  = s' : con s' t1 t2
-
--- | Empty list is Nothing (e.g., undefined), non-empty list is Just
-type MaybeSTrace = [State]
-
-type PartialD = State -> MaybeSTrace
-
-askS :: (State -> D) -> D
-askS f = D $ \s -> unD (f s) s
+type PartialD = State -> Maybe (Trace D)
 
 injD :: D -> PartialD
-injD (D d) = \s -> NE.toList (d s)
+injD (D d) = \s -> Just (d s)
+
+cons :: State -> Trace D -> Trace D
+cons s t = ConsT s (ValA NI) t
 
 step :: PartialD -> D
-step fun = D $ \s -> s NE.:| fun s
+step fun = D $ \s -> case fun s of
+  Nothing -> End s
+  Just t  -> cons s t
 
 (>.>) :: D -> D -> D
-D d1 >.> D d2 = D $ \s -> let p = d1 s in p `concatS` d2 (dstS p)
+D d1 >.> D d2 = D $ \s -> let p = d1 s in p `concatT` d2 (dst p)
 
-run :: LExpr -> Trace
+run :: LExpr -> Trace D
 run le = unD (runD le) (E le,Map.empty,[])
 
 runD :: LExpr -> D
@@ -118,49 +119,46 @@ runD le = D $ \s -> case s of
       Var n -> env Map.!? n `orElse` botD
       Lam n le' -> step (ret (Fun (\d -> step (app2 n le') >.> go le' (Map.insert n d env))))
       App le' n -> step (app1 (env Map.! n)) >.> go le' env >.> reduce
-      Let n le1 le2 -> D $ \(e,cache,cont) ->
-        let (addr,cache') = alloc cache
-            d = memo le1 addr (go le1 env')
+      Let n le1 le2 -> D $ \(e,heap,cont) ->
+        let addr = Map.size heap
             env' = Map.insert n d env
-         in unD (step let_ >.> go le2 env') (e,cache',cont)
+            d = memo le1 addr (go le1 env')
+            heap' = Map.insert addr (le1, d) heap
+         in unD (step let_ >.> go le2 env') (e,heap',cont)
 
-ret :: Value D -> PartialD
-ret v (E sv,cache,cont) | isVal sv = [(Ret (sv, v),cache, cont)]
-ret _ _ = []
+ret :: Value -> PartialD
+ret v (E sv,heap,cont) | isVal sv = Just (End (Ret (sv, v),heap, cont))
+ret _ _ = Nothing
 
 memo :: LExpr -> Addr -> D -> D
 memo e a d = step go
   where
-    go s@(DVar _,cache,cont) = case Map.lookup a cache of
-      Just Nothing -> injD (d >.> step upd) (E e, cache, Update a : cont)
-      Just (Just (sv,d)) -> injD (d >.> step upd) (E sv, cache, Update a : cont)
+    go s@(DVar _,heap,cont) = case Map.lookup a heap of
+      Just (sv,d) -> injD (d >.> step upd) (E sv, heap, Update a : cont)
       Nothing -> error ("invalid address " ++ show a)
-    go s = []
+    go s = Nothing
 
 upd :: PartialD
-upd (Ret (sv,v), cache, Update a:cont)
+upd (Ret (sv,v), heap, Update a:cont)
   | isVal sv
-  = [(Ret (sv,v), Map.insert a (Just (sv,step (ret v))) cache, cont)]
-upd _ = []
+  = Just (End (Ret (sv,v), Map.insert a (sv,step (ret v)) heap, cont))
+upd _ = Nothing
 
 app1 :: D -> PartialD
-app1 d (DApp e x, cache, cont) = [(E e, cache, Apply d : cont)]
-app1 d _ = []
+app1 d (DApp e x, heap, cont) = Just (End (E e, heap, Apply d : cont))
+app1 d _ = Nothing
 
 app2 :: Name -> LExpr -> PartialD
-app2 n e (Ret (sv,v), cache, Apply _ : cont) = [(E e, cache, cont)]
-app2 n e _ = []
+app2 n e (Ret (sv,v), heap, Apply _ : cont) = Just (End (E e, heap, cont))
+app2 n e _ = Nothing
 
 reduce :: D
 reduce = D go
   where
     go s@(Ret (sv,(Fun f)), _, Apply d : cont) = unD (f d) s
-    go s = NE.singleton s
+    go s = End s
 
 let_ :: PartialD
-let_ (DLet x e1 e2, cache, cont)
-  = [(E e2, cache, cont)]
-let_ _ = []
-
-alloc :: Cache -> (Addr, Cache)
-alloc c | let a = Map.size c = (a, Map.insert a Nothing c)
+let_ (DLet x e1 e2, heap, cont)
+  = Just (End (E e2, heap, cont))
+let_ _ = Nothing
