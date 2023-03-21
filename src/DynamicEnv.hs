@@ -54,6 +54,9 @@ instance HasLabel State where
   labelOf (p,_,_,_) = labelOf p
 
 newtype D = D { unD :: State -> Trace D }
+instance Eq D where _ == _ = True
+instance Show D where show _ = "D"
+
 newtype Value = Fun (D -> D)
 instance Show Value where show (Fun _) = "fun"
 
@@ -64,11 +67,7 @@ instance Show Value where show (Fun _) = "fun"
 type instance StateX D = State
 type instance RetX D = (Val,Value)
 type instance ValX D = NoInfo
-type instance App1X D = NoInfo
-type instance App2X D = NoInfo
-type instance BindX D = NoInfo
-type instance LookupX D = NoInfo
-type instance UpdateX D = NoInfo
+type instance EnvRng D = D
 
 traceEnv :: Trace D -> NonEmpty Env
 traceEnv = fmap go . traceStates
@@ -79,20 +78,10 @@ traceEnv = fmap go . traceStates
 botD :: D
 botD = D (\p -> End p)
 
-instance Eq D where
-  _ == _ = True
+type PartialD = State -> Maybe (Action D, Trace D)
 
-instance Ord D where
-  compare _ _ = EQ
-
-instance Show D where
-  show _ = "D"
-
-
-type PartialD = State -> Maybe (Trace D)
-
-injD :: D -> PartialD
-injD (D d) = \s -> Just (d s)
+injD :: Action D -> D -> PartialD
+injD a (D d) = \s -> Just (a, d s)
 
 cons :: State -> Trace D -> Trace D
 cons s t = ConsT s (ValA NI) t
@@ -100,7 +89,7 @@ cons s t = ConsT s (ValA NI) t
 step :: PartialD -> D
 step fun = D $ \s -> case fun s of
   Nothing -> End s
-  Just t  -> cons s t
+  Just (a, t)  -> ConsT s a t
 
 (>.>) :: D -> D -> D
 D d1 >.> D d2 = D $ \s -> let p = d1 s in p `concatT` d2 (dst p)
@@ -116,12 +105,14 @@ runD le = D $ \s -> case s of
     go :: LExpr -> D
     go le = case le.thing of
       Var n -> var
-      Lam n le' -> step (ret (Fun (\d -> step (app2 n le' d) >.> go le')))
+      Lam n le' ->
+        let v = Fun (\d -> step (app2 n le' d) >.> go le')
+         in step (ret v)
       App le' n -> step app1 >.> go le' >.> reduce
-      Let n le1 le2 -> step (let_ (memo le1 (go le1))) >.> go le2
+      Let n le1 le2 -> let_ (memo le1 (go le1)) >.> go le2
 
 ret :: Value -> PartialD
-ret v (E sv,env,heap,cont) | isVal sv = Just (End (Ret (sv, v),env, heap, cont))
+ret v (E sv,env,heap,cont) | isVal sv = Just (ValA NI, End (Ret (sv, v),env, heap, cont))
 ret _ _ = Nothing
 
 var :: D
@@ -134,22 +125,22 @@ memo :: LExpr -> D -> Env -> Addr -> D
 memo e d env a = step go
   where
     go s@(DVar _,_,heap,cont) = case Map.lookup a heap of
-      Just (sv,env,d) -> injD (d >.> step upd) (E sv, env, heap, Update a : cont)
+      Just (sv,env,d) -> injD (LookupA (LI a)) (d >.> step upd) (E sv, env, heap, Update a : cont)
       Nothing -> error ("invalid address " ++ show a)
     go s = Nothing
 
 upd :: PartialD
 upd (Ret (sv,v), env, heap, Update a:cont)
   | isVal sv
-  = Just (End (Ret (sv,v), env, Map.insert a (sv,env,step (ret v)) heap, cont))
+  = Just (UpdateA (UI a), End (Ret (sv,v), env, Map.insert a (sv,env,step (ret v)) heap, cont))
 upd _ = Nothing
 
 app1 :: PartialD
-app1 (DApp e x, env, heap, cont) | Just d <- Map.lookup x env = Just (End (E e, env, heap, Apply d : cont))
+app1 (DApp e x, env, heap, cont) | Just d <- Map.lookup x env = Just (App1A NI, End (E e, env, heap, Apply d : cont))
 app1 _ = Nothing
 
 app2 :: Name -> LExpr -> D -> PartialD
-app2 n e d (Ret (sv,v), env, heap, Apply _ : cont) = Just (End (E e, Map.insert n d env, heap, cont))
+app2 n e d (Ret (sv,v), env, heap, Apply _ : cont) = Just (App2A (AI n d), End (E e, Map.insert n d env, heap, cont))
 app2 n e d _ = Nothing
 
 reduce :: D
@@ -158,11 +149,13 @@ reduce = D go
     go s@(Ret (sv,(Fun f)), _, _, Apply d : cont) = unD (f d) s
     go s = End s
 
-let_ :: (Env -> Addr -> D) -> PartialD
-let_ mk_d (DLet x e1 e2, env, heap, cont)
-  | let addr = Map.size heap
-        env' = Map.insert x d env
-        d    = mk_d env' addr
-        heap' = Map.insert addr (e1, env', d) heap
-  = Just (End (E e2, env', heap', cont))
-let_ _ _ = Nothing
+let_ :: (Env -> Addr -> D) -> D
+let_ mk_d = D $ \s ->
+  case s of
+    (DLet x e1 e2, env, heap, cont)
+      | let addr = Map.size heap
+            env' = Map.insert x d env
+            d    = mk_d env' addr
+            heap' = Map.insert addr (e1, env', d) heap
+      -> ConsT s (BindA (BI x e1 addr d)) (End (E e2, env', heap', cont))
+    _ -> End s

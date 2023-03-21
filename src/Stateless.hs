@@ -38,8 +38,6 @@ import GHC.Stack
 import qualified Stateful
 import qualified Stackless
 
-orElse = flip fromMaybe
-
 -- | Finite intialisation trace to infinite or maximal finite trace.
 --
 -- This type is actually the subtype of `Trace -> Trace` for which every
@@ -74,25 +72,8 @@ instance Show Value where show (Fun _) = "fun"
 
 type instance StateX D = ProgPoint D
 type instance RetX D = NoInfo
-type instance App1X D = NoInfo
 type instance ValX D = Value
-
-type instance BindX D = BindInfo
-data BindInfo = BI { name :: !Name, rhs :: !LExpr, addr :: !Addr, denot :: !D }
-instance Eq BindInfo where bi1 == bi2 = bi1.name == bi2.name && bi1.addr == bi2.addr
-instance Show BindInfo where show bi = "(" ++ bi.name ++ "↦" ++ show bi.addr ++ ")"
-
-type instance LookupX D = LookupInfo
-data LookupInfo = LI { addr :: !Addr } deriving Eq
-instance Show LookupInfo where show li = "(" ++ show li.addr ++ ")"
-
-type instance UpdateX D = UpdateInfo
-data UpdateInfo = UI { addr :: !Addr } deriving Eq
-instance Show UpdateInfo where show ui = "(" ++ show ui.addr ++ ")"
-
-type instance App2X D = App2Info
-data App2Info = A2I { name :: !Name, denot :: !D } deriving Eq
-instance Show App2Info where show ai = "(" ++ show ai.name ++ ")"
+type instance EnvRng D = D
 
 -- | The bottom element of the partial pointwise prefix ordering on `D`.
 botD :: D
@@ -151,7 +132,7 @@ runD le env = go le env
         let apply = askP $ \p -> whenP (val p) $ \(Fun f) -> f d
          in step (App1A NI) (E le) >.> go le env >.> apply
       Lam n le' ->
-        let val = Fun (\d -> step (App2A (A2I n d)) (E le') >.> go le' (Map.insert n d env))
+        let val = Fun (\d -> step (App2A (AI n d)) (E le') >.> go le' (Map.insert n d env))
          in step (ValA val) (Ret NI)
       Let n le1 le2 -> askP $ \p ->
         let a = hash p
@@ -184,16 +165,19 @@ concStackState (Ret (sv,_), heap) = go (End (E sv)) (Map.toList heap)
 concStackTrace :: Trace Stackless.D -> Trace D
 concStackTrace t = go t
   where
-    forget_ret (Ret _) = Ret NI
-    forget_ret (E e) = E e
+    forget_ret = mapProgPoint (const NI)
     go (End (p,heap)) = End (forget_ret p)
-    go (ConsT (p,heap) _ rest) =
-      ConsT (forget_ret p) a (go rest)
-          where
-            a = case p of
-              Ret (sv,v) -> _
-              E e -> case e.thing of
-                Var n -> _
+    go (ConsT (p,heap) a rest) =
+      ConsT (forget_ret p) a' (go rest)
+        where
+          (p',_) = src rest
+          a' = case (p, a, p') of
+            (_, ValA _, Ret (_, v)) -> ValA (concStackV v)
+            (_, UpdateA ui, _) -> UpdateA ui
+            (_, LookupA li, _) -> LookupA li
+            (_, BindA bi, _) -> BindA (bi { denot = concStackD bi.denot })
+            (_, App1A _, _) -> App1A NI
+            (_, App2A ai, _) -> App2A (ai { arg = concStackD ai.arg })
 
 absStackTrace :: Trace Stateless.D -> Trace Stackless.D
 absStackTrace p = go Map.empty Map.empty Map.empty (toList (splitsT p))
@@ -223,7 +207,7 @@ absStackTrace p = go Map.empty Map.empty Map.empty (toList (splitsT p))
         App1A _ ->
           go envs env heap rest
         App2A ai ->
-          go envs (Map.insert ai.name (absStackD ai.denot) env) heap rest
+          go envs (Map.insert ai.name (absStackD ai.arg) env) heap rest
 
 --config :: Show d => Expr -> Trace d -> [Configuration]
 --config e p0 = yield (consifyT p0) init

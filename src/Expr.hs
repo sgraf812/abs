@@ -3,6 +3,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE ImpredicativeTypes #-}
 {-# LANGUAGE ViewPatterns #-}
@@ -234,6 +235,10 @@ type Val = LExpr
 
 data ProgPoint d = Ret !(RetX d) | E !LExpr
 
+mapProgPoint :: (RetX d1 -> RetX d2) -> ProgPoint d1 -> ProgPoint d2
+mapProgPoint f (Ret d1) = Ret (f d1)
+mapProgPoint _ (E e) = E e
+
 pattern DVar n <- (E (LVar n))
 pattern DApp e x <- (E (LApp e x))
 pattern DLam x e <- (E (LLam x e))
@@ -258,33 +263,39 @@ instance HasLabel (ProgPoint d) where
   labelOf (Ret _) = returnLabel
   labelOf (E e)   = e.at
 
-type family RetX d
 type family StateX d
+type family RetX d
 type family ValX d
-type family App1X d
-type family App2X d
-type family BindX d
-type family LookupX d
-type family UpdateX d
+type family EnvRng d
 
 data NoInfo = NI deriving Eq
 instance Show NoInfo where show _ = ""
 
+data BindInfo d = BI { name :: !Name, rhs :: !LExpr, addr :: !Addr, denot :: !d }
+instance Eq (BindInfo d) where bi1 == bi2 = bi1.name == bi2.name && bi1.addr == bi2.addr
+instance Show (BindInfo d) where show bi = "(" ++ bi.name ++ "↦" ++ show bi.addr ++ ")"
+
+data LookupInfo = LI { addr :: !Addr } deriving Eq
+instance Show LookupInfo where show li = "(" ++ show li.addr ++ ")"
+
+data UpdateInfo = UI { addr :: !Addr } deriving Eq
+instance Show UpdateInfo where show ui = "(" ++ show ui.addr ++ ")"
+
+data AppInfo d = AI { name :: !Name, arg :: !(EnvRng d) }
+instance Eq (AppInfo d) where ai1 == ai2 = ai1.name == ai2.name
+instance Show (AppInfo d) where show ai = "(" ++ show ai.name ++ ")"
+
 data Action d
   = ValA !(ValX d)
-  | App1A !(App1X d)
-  | App2A !(App2X d) -- !Name !(AddrOrD d) -- The Name is entirely optional and redundant with the Fun Value
-  | BindA !(BindX d) --  !Name !Addr !d
-  | LookupA !(LookupX d) -- !Addr
-  | UpdateA !(UpdateX d) -- Addr
+  | App1A !NoInfo
+  | App2A !(AppInfo d)
+  | BindA !(BindInfo d)
+  | LookupA !LookupInfo
+  | UpdateA !UpdateInfo
 
-type AllActions :: (Type -> Constraint) -> Type -> Constraint
-type AllActions c d =
-  (c (ValX d), c (App1X d), c (App2X d), c (BindX d), c (LookupX d), c (UpdateX d))
+deriving instance Eq (ValX d) => Eq (Action d)
 
-deriving instance AllActions Eq d => Eq (Action d)
-
-instance (Show d, AllActions Show d) => Show (Action d) where
+instance Show (ValX d) => Show (Action d) where
   show a = case a of
     ValA x -> "val" ++ show x
     LookupA x -> "look" ++ show x
@@ -298,12 +309,12 @@ data Trace d
   | ConsT !(StateX d) !(Action d) (Trace d)
   | SnocT (Trace d) !(Action d) !(StateX d)
 
-deriving instance (Eq (StateX d), AllActions Eq d) => Eq (Trace d)
+deriving instance (Eq (ValX d), Eq (StateX d)) => Eq (Trace d)
 
 -- think of type Trace = Nu TraceF; e.g., greatest fixed-point, to allow
 -- infinite traces Haskell data types are greatest fixed-points
 
-instance (Show d, Show (StateX d), AllActions Show d) => Show (Trace d) where
+instance (Show (Action d), Show (StateX d)) => Show (Trace d) where
   show (End l) = show l
   show (ConsT l a t) = show l ++ "-" ++ show a ++ "->" ++ show t ++ ""
   show (SnocT t a l) = show t ++ "-" ++ show a ++ "->" ++ show l
@@ -537,6 +548,9 @@ uniqify e = evalState (go Map.empty e) Set.empty
       let n' = try n
       put (Set.insert n' s)
       pure n'
+
+orElse = flip fromMaybe
+infixl 1 `orElse`
 
 ---- | Potential liveness abstraction
 --absL :: Set Name -> Trace d -> Set Name

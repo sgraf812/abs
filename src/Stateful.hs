@@ -56,11 +56,7 @@ instance Show Value where show (Fun _) = "fun"
 type instance RetX D = (Val,Value)
 type instance StateX D = State
 type instance ValX D = NoInfo
-type instance App1X D = NoInfo
-type instance App2X D = NoInfo
-type instance BindX D = NoInfo
-type instance LookupX D = NoInfo
-type instance UpdateX D = NoInfo
+type instance EnvRng D = Addr
 
 traceLabels :: Trace D -> NonEmpty Label
 traceLabels = fmap go . traceStates
@@ -77,10 +73,10 @@ traceMemory = fmap go . traceStates
 botD :: D
 botD = D (\p -> End p)
 
-type PartialD = State -> Maybe (Trace D)
+type PartialD = State -> Maybe (Action D, Trace D)
 
-injD :: D -> PartialD
-injD (D d) = \s -> Just (d s)
+injD :: Action D -> D -> PartialD
+injD a (D d) = \s -> Just (a, d s)
 
 cons :: State -> Trace D -> Trace D
 cons s t = ConsT s (ValA NI) t
@@ -88,7 +84,7 @@ cons s t = ConsT s (ValA NI) t
 step :: PartialD -> D
 step fun = D $ \s -> case fun s of
   Nothing -> End s
-  Just t  -> cons s t
+  Just (a, t)  -> ConsT s a t
 
 (>.>) :: D -> D -> D
 D d1 >.> D d2 = D $ \s -> let p = d1 s in p `concatT` d2 (dst p)
@@ -109,38 +105,38 @@ runD le = D $ \s -> case s of
       Let n le1 le2 -> step (let_ (go le1)) >.> go le2
 
 ret :: Value -> PartialD
-ret v (E sv,env,heap,cont) | isVal sv = Just (End (Ret (sv,v), env, heap, cont))
+ret v (E sv,env,heap,cont) | isVal sv = Just (ValA NI, End (Ret (sv,v), env, heap, cont))
 ret _ _ = Nothing
 
 var1 :: PartialD
 var1 (E (LVar x), env, heap, cont)
   | Just a <- Map.lookup x env
   , Just (e, env', d) <- Map.lookup a heap
-  = injD d (E e, env', heap, Update a:cont)
+  = injD (LookupA (LI a)) d (E e, env', heap, Update a:cont)
 var1 _ = Nothing
 
 var2 :: PartialD
 var2 (Ret (sv, v), env, heap, Update a:cont)
   | isVal sv
-  = Just (End (Ret (sv,v), env, Map.insert a (sv,env,step d) heap, cont))
+  = Just (UpdateA (UI a), End (Ret (sv,v), env, Map.insert a (sv,env,step d) heap, cont))
   where
-    d (E sv',env,heap,cont) | sv'.at == sv.at = Just (End (Ret (sv,v), env, heap, cont))
+    d (E sv',env,heap,cont) | sv'.at == sv.at = Just (ValA NI, End (Ret (sv,v), env, heap, cont))
     d _ = Nothing
 var2 _ = Nothing
 
 app1 :: PartialD
-app1 (E (LApp e x), env, heap, cont) | Just a <- Map.lookup x env = Just (End (E e, env, heap, Apply a : cont))
+app1 (E (LApp e x), env, heap, cont) | Just a <- Map.lookup x env = Just (App1A NI, End (E e, env, heap, Apply a : cont))
 app1 _ = Nothing
 
 app2 :: PartialD
 app2 (Ret (LLam x e, Fun d), env, heap, Apply a : cont)
-  = injD d (E e, Map.insert x a env, heap, cont)
+  = injD (App2A (AI x a)) d (E e, Map.insert x a env, heap, cont)
 app2 _ = Nothing
 
 let_ :: D -> PartialD
 let_ d1 (E (LLet x e1 e2), env,heap,cont)
   | let a = freshAddr heap
   , let env' = Map.insert x a env
-  = Just (End (E e2, env', Map.insert a (e1, env', d1) heap, cont))
+  = Just (BindA (BI x e1 a d1), End (E e2, env', Map.insert a (e1, env', d1) heap, cont))
 let_ _ _ = Nothing
 

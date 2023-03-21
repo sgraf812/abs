@@ -54,9 +54,6 @@ import Data.Void
 import Data.Bifunctor
 import Data.List.NonEmpty (NonEmpty)
 
-orElse = flip fromMaybe
-infixl 1 `orElse`
-
 type Env = Name :-> Addr
 type Heap = Addr :-> (Env, D)
 
@@ -94,24 +91,8 @@ instance Show Value where show (Fun _) = "fun"
 
 type instance StateX D = ProgPoint D
 type instance RetX D = NoInfo
-type instance App1X D = NoInfo
 type instance ValX D = Value
-
-type instance BindX D = BindInfo
-data BindInfo = BI { name :: !Name, addr :: !Addr, denot :: !D } deriving Eq
-instance Show BindInfo where show bi = "(" ++ bi.name ++ "↦" ++ show bi.addr ++ ")"
-
-type instance LookupX D = LookupInfo
-data LookupInfo = LI { addr :: !Addr } deriving Eq
-instance Show LookupInfo where show li = "(" ++ show li.addr ++ ")"
-
-type instance UpdateX D = UpdateInfo
-data UpdateInfo = UI { addr :: !Addr } deriving Eq
-instance Show UpdateInfo where show ui = "(" ++ show ui.addr ++ ")"
-
-type instance App2X D = App2Info
-data App2Info = A2I { name :: !Name, addr :: !Addr } deriving Eq
-instance Show App2Info where show ai = "(" ++ show ai.name ++ "↦" ++ show ai.addr ++ ")"
+type instance EnvRng D = Addr
 
 -- | The bottom element of the partial pointwise prefix ordering on `D`.
 botD :: D
@@ -161,7 +142,7 @@ run le = askP $ \p -> case le.thing of
         let p2 = unD (cons (App1A NI) (E le) (run le)) p
             p2' = concatT p p2
          in concatT p2 $ case val p2' of
-              Just (Fun (x,l,env',f)) -> unD (cons (App2A (A2I x a)) (E l) f) p2'
+              Just (Fun (x,l,env',f)) -> unD (cons (App2A (AI x a)) (E l) f) p2'
               Nothing      -> unD botD p2' -- Stuck! Can happen in an open program
                                            -- Or with data types
        Nothing -> unD botD p
@@ -172,7 +153,7 @@ run le = askP $ \p -> case le.thing of
   Let n le1 le2 -> D $ \p ->
     let a = hash' p
         d = cons (LookupA (LI a)) (E le1) (snoc (memo a (run le1)) (Ret NI) (UpdateA (UI a)))
-     in unD (cons (BindA (BI n a d)) (E le2) (run le2)) p
+     in unD (cons (BindA (BI n le1 a d)) (E le2) (run le2)) p
   where
     lookup :: Ord a => a -> (a :-> Addr) -> (Addr :-> (Env,D)) -> (Env,D)
     lookup x env heap = Map.lookup x env >>= (heap Map.!?) `orElse` (Map.empty, botD)
@@ -201,7 +182,7 @@ materialiseState = go Nothing (Map.empty, Map.empty) . consifyT
         -- form `let a = x in λy.a`, then we have to bind the `a` in the value
         -- `λy.a`. Perhaps it would be simpler also to update the d rather than
         -- jsut mess with the env'.
-      App2A a | Just (Fun (x,_l,env,_d)) <- mb_val -> go Nothing (Map.insert x a.addr env, heap) t
+      App2A a | Just (Fun (x,_l,env,_d)) <- mb_val -> go Nothing (Map.insert x a.arg env, heap) t
 
 materialiseStates :: Trace D -> NonEmpty (Env, Heap)
 materialiseStates p = materialiseState <$> prefs p

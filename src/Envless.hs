@@ -32,8 +32,6 @@ import Data.Bifunctor
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NE
 
-orElse = flip fromMaybe
-
 -- | How we go from Stateful to this state
 --
 -- 1. Move Lookup into Env; have Env = Name :-> D and let its action look into
@@ -67,24 +65,8 @@ instance Show Value where show (Fun _) = "fun"
 
 type instance StateX D = State
 type instance RetX D = (Val,Value)
-type instance App1X D = NoInfo
 type instance ValX D = NoInfo
-
-type instance BindX D = BindInfo
-data BindInfo = BI { name :: !Name, addr :: !Addr, denot :: !D } deriving Eq
-instance Show BindInfo where show bi = "(" ++ bi.name ++ "↦" ++ show bi.addr ++ ")"
-
-type instance LookupX D = LookupInfo
-data LookupInfo = LI { addr :: !Addr } deriving Eq
-instance Show LookupInfo where show li = "(" ++ show li.addr ++ ")"
-
-type instance UpdateX D = UpdateInfo
-data UpdateInfo = UI { addr :: !Addr } deriving Eq
-instance Show UpdateInfo where show ui = "(" ++ show ui.addr ++ ")"
-
-type instance App2X D = App2Info
-data App2Info = A2I { name :: !Name, addr :: !Addr } deriving Eq
-instance Show App2Info where show ai = "(" ++ show ai.name ++ "↦" ++ show ai.addr ++ ")"
+type instance EnvRng D = D
 
 -- | The bottom element of the partial pointwise prefix ordering on `D`.
 botD :: D
@@ -98,10 +80,10 @@ injD (D d) = \s -> Just (d s)
 cons :: State -> Trace D -> Trace D
 cons s t = ConsT s (ValA NI) t
 
-step :: PartialD -> D
-step fun = D $ \s -> case fun s of
+step :: Action D -> PartialD -> D
+step a fun = D $ \s -> case fun s of
   Nothing -> End s
-  Just t  -> cons s t
+  Just t  -> ConsT s a t
 
 (>.>) :: D -> D -> D
 D d1 >.> D d2 = D $ \s -> let p = d1 s in p `concatT` d2 (dst p)
@@ -117,31 +99,33 @@ runD le = D $ \s -> case s of
     go :: LExpr -> Env -> D
     go le env = case le.thing of
       Var n -> env Map.!? n `orElse` botD
-      Lam n le' -> step (ret (Fun (\d -> step (app2 n le') >.> go le' (Map.insert n d env))))
-      App le' n -> step (app1 (env Map.! n)) >.> go le' env >.> reduce
+      Lam n le' ->
+        let v = Fun (\d -> step (App2A (AI n d)) (app2 n le') >.> go le' (Map.insert n d env))
+         in step (ValA NI) (ret v)
+      App le' n -> step (App1A NI) (app1 (env Map.! n)) >.> go le' env >.> reduce
       Let n le1 le2 -> D $ \(e,heap,cont) ->
         let addr = Map.size heap
             env' = Map.insert n d env
             d = memo le1 addr (go le1 env')
             heap' = Map.insert addr (le1, d) heap
-         in unD (step let_ >.> go le2 env') (e,heap',cont)
+         in unD (step (BindA (BI n le1 addr d)) let_ >.> go le2 env') (e,heap',cont)
 
 ret :: Value -> PartialD
 ret v (E sv,heap,cont) | isVal sv = Just (End (Ret (sv, v),heap, cont))
 ret _ _ = Nothing
 
 memo :: LExpr -> Addr -> D -> D
-memo e a d = step go
+memo e a d = step (LookupA (LI a)) go
   where
     go s@(DVar _,heap,cont) = case Map.lookup a heap of
-      Just (sv,d) -> injD (d >.> step upd) (E sv, heap, Update a : cont)
+      Just (sv,d) -> injD (d >.> step (UpdateA (UI a)) upd) (E sv, heap, Update a : cont)
       Nothing -> error ("invalid address " ++ show a)
     go s = Nothing
 
 upd :: PartialD
 upd (Ret (sv,v), heap, Update a:cont)
   | isVal sv
-  = Just (End (Ret (sv,v), Map.insert a (sv,step (ret v)) heap, cont))
+  = Just (End (Ret (sv,v), Map.insert a (sv,step (ValA NI) (ret v)) heap, cont))
 upd _ = Nothing
 
 app1 :: D -> PartialD
