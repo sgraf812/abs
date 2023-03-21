@@ -27,7 +27,9 @@ import qualified Stateful
 import Expr
 import Text.Show (showListWith)
 import qualified Data.List.NonEmpty as NE
-import qualified TooEarlyStateless
+import qualified DynamicEnv
+import qualified Envless
+import qualified Stackless
 
 x, y, z, a, b, c, d, e, f, i, t :: Expr
 x : y : z : a : b : c : d : e : f : i : t : _ = map (Fix . Var . (: [])) "xyzabcdefit"
@@ -87,7 +89,7 @@ e_bug1 = label $ read "let a = (λb.let c = a in (let d = λe.a b in let f = let
 -- >>> e_2
 -- 1(let x = 2(λy. 3(y))4 in 5(6(7(x) x) x))
 --
--- >>> takeT 10 $ Stateless.maxinf e_2 Map.empty (End (at e_2))
+-- >>> takeT 10 $ Stateless.stateless e_2 Map.empty (End (at e_2))
 -- [1]-bind->[5]-app1->[6]-app1->[7]-look([1]_0)->[2]-val(fun)->[4]-app2->[3]-look([1]_0)->[2]-val(fun)->[4]-app2->[3]-look([1]_0)->[2]
 main :: IO ()
 main = forM_ [(15,e_1), (15,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_W), (10,e_bool), (50,e_fresh), (50,e_abs), (4,e_stuck_app), (20,e_stuck_let), (30, e_bug1)] $ \(n,e) -> do
@@ -100,33 +102,43 @@ main = forM_ [(15,e_1), (15,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_W), (
 --  print $ ByName.denot (unlabel e) Map.empty
   putStrLn "-----------------------------"
   putStrLn "maximal and infinite trace (scary maximal trace semantics)"
-  let maxinf = takeT n $ Stateless.run e Map.empty (End (at e))
-  print maxinf
-  putStrLn "-----------------------------"
-  putStrLn "maximal and infinite trace, stateless"
-  let stateless = takeT n $ TooEarlyStateless.runInit e
+  let stateless = takeT n $ Stateless.run e Map.empty (End (E e))
   print stateless
   putStrLn "-----------------------------"
   putStrLn "maximal and infinite trace continuation semantics"
-  let cont = takeT n $ Cont.unC (Cont.absD (Stateless.runD e Map.empty)) id (End (at e))
+  let cont = takeT n $ Cont.unC (Cont.absD (Stateless.runD e Map.empty)) id (End (E e))
   print cont
   putStrLn "-----------------------------"
   putStrLn "stateful trace semantics"
-  let stateful = NE.fromList $ NE.take (n+1) $ Stateful.run e
-  mapM_ print stateful
+  let stateful = takeT n $ Stateful.run e
+  mapM_ print (traceStates stateful)
   putStrLn "-----------------------------"
-  when (traceLabels maxinf /= traceLabels stateless) (error "maxinf /= stateless")
-  when (traceLabels maxinf /= Stateful.traceLabels stateful) (error "maxinf /= stateful")
-  when (traceLabels maxinf /= traceLabels cont) (error "maxinf /= cont")
+  putStrLn "DynamicEnv"
+  let dynamic_env = takeT n $ DynamicEnv.run e
+  print dynamic_env
+  putStrLn "-----------------------------"
+  putStrLn "Envless"
+  let envless = takeT n $ Envless.run e
+  print envless
+  putStrLn "-----------------------------"
+  putStrLn "Stackless"
+  let stackless = takeT n $ Stackless.run e
+  print stackless
+  putStrLn "-----------------------------"
+  when (traceLabels stateless /= traceLabels stateful) (error "stateless /= stateful")
+  when (traceLabels stateless /= traceLabels dynamic_env) (error "stateless /= dynamic_env")
+  when (traceLabels stateless /= traceLabels envless) (error "stateless /= envless")
+  when (traceLabels stateless /= traceLabels stackless) (error "stateless /= stackless")
+  when (traceLabels stateless /= traceLabels cont) (error "stateless /= cont")
 
 --  putStrLn "tracesAt 2"
---  mapM_ print $ tracesAt 2 $ takeT 10 $ Stateless.maxinf e Map.empty (End (at e))
+--  mapM_ print $ tracesAt 2 $ takeT 10 $ Stateless.stateless e Map.empty (End (at e))
 
 --  putStrLn "splitBalancedPrefix"
---  forM_ [20,19..0] $ \m -> print $ fmap fst $ splitBalancedPrefix $ dropT m $ takeT n $ Stateless.maxinf e Map.empty (End (at e))
+--  forM_ [20,19..0] $ \m -> print $ fmap fst $ splitBalancedPrefix $ dropT m $ takeT n $ Stateless.stateless e Map.empty (End (at e))
 
 --  putStrLn "absS"
---  mapM_ print $ TooEarlyStateless.absS $ takeT (n-1) $ TooEarlyStateless.maxinf e Map.empty (End (at e))
+--  mapM_ print $ TooEarlyStateless.absS $ takeT (n-1) $ TooEarlyStateless.stateless e Map.empty (End (at e))
 
-  putStr "dead: "
-  print $ Set.difference (letBoundVars (unlabel e)) $ absL Set.empty $ takeT (n-1) $ Stateless.run e Map.empty (End (at e))
+--  putStr "dead: "
+--  print $ Set.difference (letBoundVars (unlabel e)) $ absL Set.empty $ takeT (n-1) $ Stateless.run e Map.empty (End (at e))

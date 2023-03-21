@@ -83,9 +83,6 @@ type PartialD = State -> Maybe (Action D, Trace D)
 injD :: Action D -> D -> PartialD
 injD a (D d) = \s -> Just (a, d s)
 
-cons :: State -> Trace D -> Trace D
-cons s t = ConsT s (ValA NI) t
-
 step :: PartialD -> D
 step fun = D $ \s -> case fun s of
   Nothing -> End s
@@ -109,7 +106,7 @@ runD le = D $ \s -> case s of
         let v = Fun (\d -> step (app2 n le' d) >.> go le')
          in step (ret v)
       App le' n -> step app1 >.> go le' >.> reduce
-      Let n le1 le2 -> let_ (memo le1 (go le1)) >.> go le2
+      Let n le1 le2 -> let_ (go le1) >.> go le2
 
 ret :: Value -> PartialD
 ret v (E sv,env,heap,cont) | isVal sv = Just (ValA NI, End (Ret (sv, v),env, heap, cont))
@@ -121,8 +118,8 @@ var = D $ \s@(e, env, cont,heap) ->
     DVar x | Just d <- Map.lookup x env -> unD d s
     _                                   -> End s
 
-memo :: LExpr -> D -> Env -> Addr -> D
-memo e d env a = step go
+memo :: D -> Addr -> D
+memo d a = step go
   where
     go s@(DVar _,_,heap,cont) = case Map.lookup a heap of
       Just (sv,env,d) -> injD (LookupA (LI a)) (d >.> step upd) (E sv, env, heap, Update a : cont)
@@ -149,13 +146,12 @@ reduce = D go
     go s@(Ret (sv,(Fun f)), _, _, Apply d : cont) = unD (f d) s
     go s = End s
 
-let_ :: (Env -> Addr -> D) -> D
-let_ mk_d = D $ \s ->
+let_ :: D -> D
+let_ d = D $ \s ->
   case s of
     (DLet x e1 e2, env, heap, cont)
       | let addr = Map.size heap
-            env' = Map.insert x d env
-            d    = mk_d env' addr
+            env' = Map.insert x (memo d addr) env
             heap' = Map.insert addr (e1, env', d) heap
       -> ConsT s (BindA (BI x e1 addr d)) (End (E e2, env', heap', cont))
     _ -> End s

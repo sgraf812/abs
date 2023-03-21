@@ -81,6 +81,10 @@ step a fun = D $ \s -> case fun s of
   Nothing -> End s
   Just t  -> ConsT s a t
 
+whenP :: Maybe a -> (a -> D) -> D
+whenP Nothing  _ = botD
+whenP (Just a) d = d a
+
 (>.>) :: D -> D -> D
 D d1 >.> D d2 = D $ \s -> let p = d1 s in p `concatT` d2 (dst p)
 
@@ -98,11 +102,12 @@ runD le = D $ \s -> case s of
       Lam n le' ->
         let v = Fun (\d -> step (App2A (AI n d)) (app2 n le') >.> go le' (Map.insert n d env))
          in step (ValA NI) (ret v)
-      App le' n -> step (App1A NI) app1 >.> go le' env >.> reduce (env Map.! n)
+      App le' n -> whenP (Map.lookup n env) $ \d ->
+        step (App1A NI) app1 >.> go le' env >.> reduce d
       Let n le1 le2 -> D $ \(e,heap) ->
         let addr = Map.size heap
-            env' = Map.insert n d env
-            d = memo le1 addr (go le1 env')
+            env' = Map.insert n (memo addr d) env
+            d = go le1 env'
             heap' = Map.insert addr (le1, d) heap
          in unD (step (BindA (BI n le1 addr d)) let_ >.> go le2 env') (e,heap')
 
@@ -110,11 +115,11 @@ ret :: Value -> PartialD
 ret v (E sv,heap) | isVal sv = Just (End (Ret (sv, v),heap))
 ret _ _ = Nothing
 
-memo :: LExpr -> Addr -> D -> D
-memo e a d = step (LookupA (LI a)) go
+memo :: Addr -> D -> D
+memo a d = step (LookupA (LI a)) go
   where
     go s@(DVar _,heap) = case Map.lookup a heap of
-      Just (sv,d) -> injD (d >.> step (UpdateA (UI a)) (upd a)) (E e, heap)
+      Just (e,d) -> injD (d >.> step (UpdateA (UI a)) (upd a)) (E e, heap)
       Nothing -> error ("invalid address " ++ show a)
     go s = Nothing
 

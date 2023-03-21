@@ -78,9 +78,6 @@ type PartialD = State -> Maybe (Action D, Trace D)
 injD :: Action D -> D -> PartialD
 injD a (D d) = \s -> Just (a, d s)
 
-cons :: State -> Trace D -> Trace D
-cons s t = ConsT s (ValA NI) t
-
 step :: PartialD -> D
 step fun = D $ \s -> case fun s of
   Nothing -> End s

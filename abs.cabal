@@ -33,7 +33,6 @@ library
         Cont
         Stateless
         Stateful
-        TooEarlyStateless
         DynamicEnv
         Envless
         Stackless

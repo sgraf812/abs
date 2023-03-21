@@ -85,6 +85,10 @@ step a fun = D $ \s -> case fun s of
   Nothing -> End s
   Just t  -> ConsT s a t
 
+whenP :: Maybe a -> (a -> D) -> D
+whenP Nothing  _ = botD
+whenP (Just a) d = d a
+
 (>.>) :: D -> D -> D
 D d1 >.> D d2 = D $ \s -> let p = d1 s in p `concatT` d2 (dst p)
 
@@ -102,11 +106,12 @@ runD le = D $ \s -> case s of
       Lam n le' ->
         let v = Fun (\d -> step (App2A (AI n d)) (app2 n le') >.> go le' (Map.insert n d env))
          in step (ValA NI) (ret v)
-      App le' n -> step (App1A NI) (app1 (env Map.! n)) >.> go le' env >.> reduce
+      App le' n -> whenP (Map.lookup n env) $ \d ->
+        step (App1A NI) (app1 d) >.> go le' env >.> reduce
       Let n le1 le2 -> D $ \(e,heap,cont) ->
         let addr = Map.size heap
-            env' = Map.insert n d env
-            d = memo le1 addr (go le1 env')
+            env' = Map.insert n (memo le1 addr d) env
+            d = go le1 env'
             heap' = Map.insert addr (le1, d) heap
          in unD (step (BindA (BI n le1 addr d)) let_ >.> go le2 env') (e,heap',cont)
 

@@ -14,7 +14,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE MonoLocalBinds #-}
 
-module Stateless (D(..), Value(Fun), run, runD) where
+module Stateless (D(..), Value(Fun), runInit, run, runD) where
 
 import Control.Applicative
 import Control.Monad
@@ -142,6 +142,9 @@ runD le env = go le env
 
 run :: LExpr -> (Name :-> D) -> Trace D -> Trace D
 run le env p = unD (runD le env) p
+
+runInit :: LExpr -> Trace D
+runInit le = run le Map.empty (End (E le))
 
 absStackD :: Stateless.D -> Stackless.D
 absStackD (Stateless.D d) = Stackless.D $

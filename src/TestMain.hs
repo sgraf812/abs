@@ -2,11 +2,13 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module TestMain (main) where
 
 import           Hedgehog hiding (label)
 import           Hedgehog.Gen (sized, int)
+import           Hedgehog.Range (constant)
 import           Control.Monad
 import qualified Gen
 import           Control.Monad.IO.Class
@@ -14,6 +16,7 @@ import           Debug.Trace
 import qualified Data.Map as Map
 import           Data.Maybe
 import           Data.String
+import qualified Data.List.NonEmpty as NE
 import           Text.Printf
 import           Control.Concurrent
 import           Control.Concurrent.Async.Lifted (race)
@@ -22,10 +25,9 @@ import           Expr hiding (assert)
 import           Stateless
 import qualified Cont
 import qualified Stateful
-import qualified Data.List.NonEmpty as NE
-import qualified TooEarlyStateless
-import Hedgehog.Range (constant)
 import qualified DynamicEnv
+import qualified Stackless
+import qualified Envless
 
 
 main :: IO ()
@@ -58,7 +60,7 @@ prop_maxinf_maximal_trace_stuck_or_balanced =
   property $ do
     e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
     let le = label e
-    let p = run le Map.empty (End le.at)
+    let p = run le Map.empty (End (E le))
     let p' = takeT (sizeFactor*100) p
     let maximal = p' == takeT (sizeFactor*101) p
     let value = val p'
@@ -79,8 +81,8 @@ prop_maxinf_stateless_is_cont =
   property $ do
     e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
     let le = label e
-    let p1 = run le Map.empty (End le.at)
-    let p2 = Cont.run le Map.empty (End le.at)
+    let p1 = run le Map.empty (End (E le))
+    let p2 = Cont.run le Map.empty (End (E le))
     let p1' = takeT (sizeFactor*100) p1
     let p2' = takeT (sizeFactor*100) p2
     p1' === Cont.concTrace p2'
@@ -89,59 +91,75 @@ prop_direct_cont_abs =
   property $ do
     e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
     let le = label e
-    let p = Cont.run le Map.empty (End le.at)
+    let p = Cont.run le Map.empty (End (E le))
     let p' = takeT (sizeFactor*100) p
     p' === Cont.absTrace (Cont.concTrace p')
 
-prop_stateful_maxinf =
+prop_stateful_stateless =
   property $ do
     e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
     let le = label e
     let p1 = Stateful.run le
-    let p2 = run le Map.empty (End le.at)
-    let p1' = NE.take (sizeFactor*100+1) p1
+    let p2 = Stateless.run le Map.empty (End (E le))
+    let p1' = takeT (sizeFactor*100) p1
     let p2' = takeT (sizeFactor*100) p2
-    let ignoring_dagger (Ret _,_,_,_) _ = True
-        ignoring_dagger (E e,_,_,_)   l = e.at == l
-    diff p1' (\a b -> length a == length b && and (zipWith ignoring_dagger a b)) (NE.toList $ traceLabels p2')
+    traceLabels p1' === traceLabels p2'
 
-prop_cacheful_maxinf =
+prop_dynamicenv_stateless =
   property $ do
     e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
     let le = label e
     let p1 = DynamicEnv.run le
-    let p2 = run le Map.empty (End le.at)
-    let p1' = NE.take (sizeFactor*100+1) p1
-    let p2' = takeT (sizeFactor*100) p2
-    let ignoring_dagger (Ret _,_,_,_) _ = True
-        ignoring_dagger (E e,_,_,_)   l = e.at == l
-    diff p1' (\a b -> length a == length b && and (zipWith ignoring_dagger a b)) (NE.toList $ traceLabels p2')
-
-prop_too_early_stateless_maxinf =
-  property $ do
-    e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
-    let le = label e
-    let p1 = TooEarlyStateless.runInit le
-    let p2 = run le Map.empty (End le.at)
+    let p2 = run le Map.empty (End (E le))
     let p1' = takeT (sizeFactor*100) p1
     let p2' = takeT (sizeFactor*100) p2
-    let same_labels a b = traceLabels a == traceLabels b
-    diff p1' same_labels p2'
+    traceLabels p1' === traceLabels p2'
 
-prop_too_eraly_stateless_split_prefix =
+prop_envless_stateless =
   property $ do
     e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
-    n <- forAll (int (constant 1 (sizeFactor*20)))
     let le = label e
-    let p = TooEarlyStateless.runInit le
-    let pref = takeT n p
-    when (dst pref == returnLabel) discard -- indexAtLE doesn't work for daggerLabel
-    let suff1 = dropT n p
-    let suff2 = TooEarlyStateless.unD (TooEarlyStateless.run (indexAtLE (dst pref) le)) pref
-    let p1 = takeT (sizeFactor*40) suff1
-    let p2 = takeT (sizeFactor*40) suff2
-    let is_pref a b = NE.toList (traceLabels a) `NE.isPrefixOf` traceLabels b
-    diff p2 is_pref p1
+    let p1 = Envless.run le
+    let p2 = run le Map.empty (End (E le))
+    let p1' = takeT (sizeFactor*100) p1
+    let p2' = takeT (sizeFactor*100) p2
+    traceLabels p1' === traceLabels p2'
+
+prop_stackless_stateless =
+  property $ do
+    e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
+    let le = label e
+    let p1 = Stackless.run le
+    let p2 = run le Map.empty (End (E le))
+    let p1' = takeT (sizeFactor*100) p1
+    let p2' = takeT (sizeFactor*100) p2
+    traceLabels p1' === traceLabels p2'
+
+prop_abs_stateless_stackless =
+  property $ do
+    e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
+    let le = label e
+    let p1 = Envless.run le
+    let p2 = run le Map.empty (End (E le))
+    let p1' = takeT (sizeFactor*100) p1
+    let p2' = takeT (sizeFactor*100) p2
+    traceLabels p1' === traceLabels p2'
+
+-- Urgh, this needs the env
+--prop_stateless_split_prefix =
+--  property $ do
+--    e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
+--    n <- forAll (int (constant 1 (sizeFactor*20)))
+--    let le = label e
+--    let p = Stateless.runInit le
+--    let pref = takeT n p
+--    le' <- case dst pref of Ret _ -> discard; E le' -> pure le'
+--    let suff1 = dropT n p
+--    let suff2 = Stateless.run le' pref
+--    let p1 = takeT (sizeFactor*40) suff1
+--    let p2 = takeT (sizeFactor*40) suff2
+--    let is_pref a b = NE.toList (traceLabels a) `NE.isPrefixOf` traceLabels b
+--    diff p2 is_pref p1
 
 eqListBy :: (a -> b -> Bool) -> [a] -> [b] -> Bool
 eqListBy f []     []     = True
@@ -154,15 +172,15 @@ dropStuffTooEarlyStateless (env, heap) = (env, Map.map (\(env,_d) -> env) heap)
 dropStuffDynamicEnv :: (Name :-> Addr, Addr :-> (a, Name :-> Addr, b)) -> (Name :-> Addr, Addr :-> (Name :-> Addr))
 dropStuffDynamicEnv (env, heap) = (env, Map.map (\(_e,env,_d) -> env) heap)
 
-prop_Stateful_materialisable_from_stateless =
-  property $ do
-    e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
-    n <- forAll (int (constant 1 (sizeFactor*40)))
-    let le = label e
-    let ful  = map dropStuffDynamicEnv $ NE.take n $ Stateful.traceMemory $ Stateful.run le
-    let less = map dropStuffTooEarlyStateless $ NE.take n $ TooEarlyStateless.traceStates $ TooEarlyStateless.runInit le
-    let eq_state (fullenv, fullheap) (lessenv, lessheap) =
-          fullenv == lessenv &&
-          Map.map (\(_e,env,_d) -> env) fullheap == Map.map (\(env,_d) -> env) lessheap
-    ful === less
+--prop_Stateful_materialisable_from_stateless =
+--  property $ do
+--    e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
+--    n <- forAll (int (constant 1 (sizeFactor*40)))
+--    let le = label e
+--    let ful  = map dropStuffDynamicEnv $ NE.take n $ Stateful.traceMemory $ Stateful.run le
+--    let less = map dropStuffTooEarlyStateless $ NE.take n $ TooEarlyStateless.traceStates $ TooEarlyStateless.runInit le
+--    let eq_state (fullenv, fullheap) (lessenv, lessheap) =
+--          fullenv == lessenv &&
+--          Map.map (\(_e,env,_d) -> env) fullheap == Map.map (\(env,_d) -> env) lessheap
+--    ful === less
 
