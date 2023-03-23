@@ -12,7 +12,8 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE TypeFamilies #-}
 
-module Stackless (D(..), ProgPoint(..), Trace, cons, traceLabels, run, runD, State, Env, Heap, Value(..)) where
+module Stackless (D(..), run, runD,
+                  State, Env, Heap, Value(..), step) where
 
 import Control.Applicative
 import Control.Monad
@@ -42,7 +43,6 @@ import qualified Data.List.NonEmpty as NE
 --    on the meta call stack
 -- 4. Materialise the state as needed during memo
 type State = (ProgPoint D, Heap)
-type Env = Name :-> D
 type Heap = Addr :-> (LExpr,D)
 instance HasLabel State where
   labelOf (p,_) = labelOf p
@@ -73,9 +73,6 @@ type PartialD = State -> Maybe (Trace D)
 injD :: D -> PartialD
 injD (D d) = \s -> Just (d s)
 
-cons :: State -> Trace D -> Trace D
-cons s t = ConsT s (ValA NI) t
-
 step :: Action D -> PartialD -> D
 step a fun = D $ \s -> case fun s of
   Nothing -> End s
@@ -96,14 +93,14 @@ runD le = D $ \s -> case s of
   (E le',_) | le.at /= le'.at -> unD botD s
   _                             -> unD (go le Map.empty) s
   where
-    go :: LExpr -> Env -> D
+    go :: LExpr -> Env D -> D
     go le env = case le.thing of
       Var n -> env Map.!? n `orElse` botD
       Lam n le' ->
-        let v = Fun (\d -> step (App2A (AI n d)) (app2 n le') >.> go le' (Map.insert n d env))
+        let v = Fun (\d -> step (App2A (A2I n d)) (app2 n le') >.> go le' (Map.insert n d env))
          in step (ValA NI) (ret v)
       App le' n -> whenP (Map.lookup n env) $ \d ->
-        step (App1A NI) app1 >.> go le' env >.> reduce d
+        step (App1A (A1I d)) app1 >.> go le' env >.> reduce d
       Let n le1 le2 -> D $ \(e,heap) ->
         let addr = Map.size heap
             env' = Map.insert n (memo addr d) env

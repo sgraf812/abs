@@ -11,7 +11,7 @@ import Data.Char
 import Text.Show
 import Control.Monad.Trans.State
 
-import Expr
+import Expr hiding (Env)
 import GHC.Stack
 
 newtype Env = Env { nextFree :: Int }

@@ -11,7 +11,8 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE TypeFamilies #-}
 
-module DynamicEnv (D(..), ProgPoint(..), Trace, traceLabels, traceEnv, run, runD) where
+module DynamicEnv (D(..), run, runD,
+                  State, Env, Heap, Cont, Frame(..), Value(..), step) where
 
 import Control.Applicative
 import Control.Monad
@@ -41,9 +42,8 @@ orElse = flip fromMaybe
 -- 3. Realise that we can now get rid of the stack, since everything happens
 --    on the meta call stack
 -- 4. Materialise the state as needed during memo
-type State = (ProgPoint D, Env, Heap, Cont)
-type Env = Name :-> D
-type Heap = Addr :-> (LExpr,Env,D)
+type State = (ProgPoint D, Env D, Heap, Cont)
+type Heap = Addr :-> (LExpr,Env D,D)
 type Cont = [Frame]
 data Frame
   = Apply D
@@ -68,11 +68,6 @@ type instance StateX D = State
 type instance RetX D = (Val,Value)
 type instance ValX D = NoInfo
 type instance EnvRng D = D
-
-traceEnv :: Trace D -> NonEmpty Env
-traceEnv = fmap go . traceStates
-  where
-    go (_,env,_,_) = env
 
 -- | The bottom element of the partial pointwise prefix ordering on `D`.
 botD :: D
@@ -133,11 +128,11 @@ upd (Ret (sv,v), env, heap, Update a:cont)
 upd _ = Nothing
 
 app1 :: PartialD
-app1 (DApp e x, env, heap, cont) | Just d <- Map.lookup x env = Just (App1A NI, End (E e, env, heap, Apply d : cont))
+app1 (DApp e x, env, heap, cont) | Just d <- Map.lookup x env = Just (App1A (A1I d), End (E e, env, heap, Apply d : cont))
 app1 _ = Nothing
 
 app2 :: Name -> LExpr -> D -> PartialD
-app2 n e d (Ret (sv,v), env, heap, Apply _ : cont) = Just (App2A (AI n d), End (E e, Map.insert n d env, heap, cont))
+app2 n e d (Ret (sv,v), env, heap, Apply _ : cont) = Just (App2A (A2I n d), End (E e, Map.insert n d env, heap, cont))
 app2 n e d _ = Nothing
 
 reduce :: D

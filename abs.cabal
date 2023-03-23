@@ -30,16 +30,20 @@ library
                     , hedgehog
                     , lifted-async
     exposed-modules:
-        Cont
-        Stateless
-        Stateful
-        DynamicEnv
-        Envless
-        Stackless
         Expr
         Main
         Gen
         TestMain
+
+        Stateful
+        Stateless
+        Cont
+
+        -- the abstraction functions
+        LessToFull
+        Stackless
+        Envless
+        DynamicEnv
     default-language: Haskell2010
 
 test-suite abs-test

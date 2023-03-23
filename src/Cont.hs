@@ -10,6 +10,7 @@
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE TupleSections #-}
 
 module Cont (C(..), run, absD, concD, absTrace, concTrace) where
 
@@ -28,19 +29,20 @@ import Text.Show (showListWith)
 import qualified Stateless
 
 import Expr
+import Data.Bifunctor (second)
 
 newtype C = C { unC :: (Trace C -> Trace C) -> Trace C -> Trace C }
 instance Eq C where _ == _ = True
 instance Show C where show _ = "C"
 
-newtype Value = Fun (C -> C)
+newtype Value = Fun ((SIAddr,C) -> C)
 instance Eq Value where _ == _ = True
 instance Show Value where show _ = "fun"
 
 type instance StateX C = ProgPoint C
 type instance RetX C = NoInfo
 type instance ValX C = Value
-type instance EnvRng C = C
+type instance EnvRng C = (SIAddr, C)
 
 botC :: C
 botC = C $ \k p -> k (End (dst p))
@@ -106,15 +108,15 @@ instance Monoid C where
 askP :: (Trace C -> C) -> C
 askP f = C $ \k p -> unC (f p) k p
 
-(!⊥) :: Ord a => (a :-> C) -> a -> C
-env !⊥ x = Map.findWithDefault botC x env
+(!⊥) :: Env (a, C) -> Name -> C
+env !⊥ x = snd <$> env Map.!? x `orElse` botC
 
-run :: LExpr -> (Name :-> C) -> Trace C -> Trace C
+run :: LExpr -> (Env (SIAddr, C)) -> Trace C -> Trace C
 run le env p
   | labelOf (dst p) /= le.at = unC botC id p
   | otherwise                = unC (go le env) (End . dst) p
   where
-    go :: LExpr -> (Name :-> C) -> C
+    go :: LExpr -> (Env (SIAddr, C)) -> C
     go le !env = case le.thing of
       Var n -> env !⊥ n
       App le n ->
@@ -123,15 +125,15 @@ run le env p
             let apply = askP $ \p -> case val p of
                   Just (Fun f) -> f d
                   Nothing      -> botC
-             in step (App1A NI) (E le) <++> go le env <++> apply
+             in step (App1A (A1I d)) (E le) <++> go le env <++> apply
           Nothing -> botC
       Lam n le' ->
-        let val = Fun (\c -> App2A (AI n c) >-> E le' <++> go le' (Map.insert n c env))
+        let val = Fun (\c -> App2A (A2I n c) >-> E le' <++> go le' (Map.insert n c env))
          in step (ValA val) (Ret NI)
       Let n le1 le2 -> askP $ \p ->
         let a = hash p
             c = memo a (E le1) (go le1 env')
-            env' = Map.insert n c env
+            env' = Map.insert n (SI a,c) env
          in step (BindA (BI n le1 a c)) (E le2) <++> go le2 env'
 
 -- | As Reynolds first proved in "On the relation between Stateless and
@@ -191,7 +193,7 @@ concD :: Cont.C -> Stateless.D
 concD (Cont.C c) = Stateless.D $ \p -> concTrace $ c id (absTrace p)
 
 absValue :: Stateless.Value -> Value
-absValue (Stateless.Fun f) = Fun (absD . f . concD)
+absValue (Stateless.Fun f) = Fun (absD . f . second concD)
 
 absAction :: Action Stateless.D -> Action Cont.C
 absAction = dimapAction absD concD
@@ -212,7 +214,7 @@ absTrace = dimapTrace absD concD
 concTrace :: Trace Cont.C -> Trace Stateless.D
 concTrace = dimapTrace concD absD
 
-class (EnvRng d1 ~ d1, EnvRng d2 ~ d2) => Dimappable d1 d2 where
+class (EnvRng d1 ~ (SIAddr, d1), EnvRng d2 ~ (SIAddr, d2)) => Dimappable d1 d2 where
   dimapValue :: (d1 -> d2) -> (d2 -> d1) -> ValX d1 -> ValX d2
   dimapState :: (d1 -> d2) -> (d2 -> d1) -> StateX d1 -> StateX d2
 
@@ -222,18 +224,18 @@ dimapTrace to from (ConsT l a t) = ConsT (dimapState to from l) (dimapAction to 
 dimapTrace to from (SnocT t a l) = SnocT (dimapTrace to from t) (dimapAction to from a) (dimapState to from l)
 
 dimapAction :: Dimappable d1 d2 => (d1 -> d2) -> (d2 -> d1) -> Action d1 -> Action d2
-dimapAction to from (App1A n)   = App1A n
+dimapAction to from (App1A ai)   = App1A (A1I (second to ai.arg1))
 dimapAction to from (ValA v)    = ValA (dimapValue to from v)
-dimapAction to from (App2A ai)  = App2A (ai { arg = to ai.arg })
+dimapAction to from (App2A ai)  = App2A (A2I ai.name (second to ai.arg))
 dimapAction to from (BindA bi)  = BindA (bi { denot = to bi.denot })
 dimapAction to from (LookupA a) = LookupA a
 dimapAction to from (UpdateA a) = UpdateA a
 
 instance Dimappable Stateless.D Cont.C where
-  dimapValue to from (Stateless.Fun f) = Fun (to . f . from)
+  dimapValue to from (Stateless.Fun f) = Fun (to . f . second from)
   dimapState _  _                      = mapProgPoint id
 
 instance Dimappable Cont.C Stateless.D where
-  dimapValue to from (Fun f) = Stateless.Fun (to . f . from)
+  dimapValue to from (Fun f) = Stateless.Fun (to . f . second from)
   dimapState _  _            = mapProgPoint id
 

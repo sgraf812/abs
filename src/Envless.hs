@@ -12,7 +12,8 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE TypeFamilies #-}
 
-module Envless (D(..), ProgPoint(..), Trace, traceLabels, run, runD) where
+module Envless (D(..), run, runD,
+                  State, Env, Heap, Cont, Frame(..), Value(..), step) where
 
 import Control.Applicative
 import Control.Monad
@@ -41,7 +42,6 @@ import qualified Data.List.NonEmpty as NE
 --    on the meta call stack
 -- 4. Materialise the state as needed during memo
 type State = (ProgPoint D, Heap, Cont)
-type Env = Name :-> D
 type Heap = Addr :-> (LExpr,D)
 type Cont = [Frame]
 data Frame
@@ -100,14 +100,14 @@ runD le = D $ \s -> case s of
   (E le',_,_) | le.at /= le'.at -> unD botD s
   _                             -> unD (go le Map.empty) s
   where
-    go :: LExpr -> Env -> D
+    go :: LExpr -> Env D -> D
     go le env = case le.thing of
       Var n -> env Map.!? n `orElse` botD
       Lam n le' ->
-        let v = Fun (\d -> step (App2A (AI n d)) (app2 n le') >.> go le' (Map.insert n d env))
+        let v = Fun (\d -> step (App2A (A2I n d)) (app2 n le') >.> go le' (Map.insert n d env))
          in step (ValA NI) (ret v)
       App le' n -> whenP (Map.lookup n env) $ \d ->
-        step (App1A NI) (app1 d) >.> go le' env >.> reduce
+        step (App1A (A1I d)) (app1 d) >.> go le' env >.> reduce
       Let n le1 le2 -> D $ \(e,heap,cont) ->
         let addr = Map.size heap
             env' = Map.insert n (memo le1 addr d) env

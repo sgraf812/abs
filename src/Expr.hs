@@ -281,14 +281,18 @@ instance Show LookupInfo where show li = "(" ++ show li.addr ++ ")"
 data UpdateInfo = UI { addr :: !Addr } deriving Eq
 instance Show UpdateInfo where show ui = "(" ++ show ui.addr ++ ")"
 
-data AppInfo d = AI { name :: !Name, arg :: !(EnvRng d) }
-instance Eq (AppInfo d) where ai1 == ai2 = ai1.name == ai2.name
-instance Show (AppInfo d) where show ai = "(" ++ show ai.name ++ ")"
+data App1Info d = A1I { arg1 :: !(EnvRng d) }
+instance Eq (App1Info d) where ai1 == ai2 = True
+instance Show (App1Info d) where show ai = ""
+
+data App2Info d = A2I { name :: !Name, arg :: !(EnvRng d) }
+instance Eq (App2Info d) where ai1 == ai2 = ai1.name == ai2.name
+instance Show (App2Info d) where show ai = "(" ++ show ai.name ++ ")"
 
 data Action d
   = ValA !(ValX d)
-  | App1A !NoInfo
-  | App2A !(AppInfo d)
+  | App1A !(App1Info d)
+  | App2A !(App2Info d)
   | BindA !(BindInfo d)
   | LookupA !LookupInfo
   | UpdateA !UpdateInfo
@@ -400,6 +404,8 @@ val t = snd <$> valT t
 
 type (:->) = Map
 infixr :->
+
+type Env = Map Name
 
 tracesAt :: HasLabel (StateX d) => Label -> Trace d -> [Trace d]
 tracesAt l t = case t of
@@ -548,6 +554,15 @@ uniqify e = evalState (go Map.empty e) Set.empty
       let n' = try n
       put (Set.insert n' s)
       pure n'
+
+-- | A wrapper indicating that this thing does not influence the semantics in
+-- any way and is just there to carry constructive proof for use in the Galois
+-- Abstraction
+newtype SemanticallyIrrelevant a = SI { useSemanticallyIrrelevant :: a }
+
+-- | An address we promise to *never* look at in `run`.
+-- It is only there so that we can write the bijection to Stateful semantics.
+type SIAddr = SemanticallyIrrelevant Addr
 
 orElse = flip fromMaybe
 infixl 1 `orElse`
