@@ -45,19 +45,19 @@ type instance ValX C = Value
 type instance EnvRng C = (SIAddr, C)
 
 botC :: C
-botC = C $ \k p -> k (End (dst p))
+botC = C $ \k p -> k (End (tgt p))
 
 step :: Action C -> ProgPoint C -> C
-step a l = C $ \k p -> ConsT (dst p) a $ k $ SnocT p a l
+step a l = C $ \k p -> ConsT (tgt p) a $ k $ SnocT p a l
 
 stepRet :: Action C -> C
 stepRet a = C $ \k p ->
-  if labelOf (dst p) /= returnLabel
+  if labelOf (tgt p) /= returnLabel
     then k p
-    else ConsT (dst p) a $ k $ SnocT p a (dst p)
+    else ConsT (tgt p) a $ k $ SnocT p a (tgt p)
 
 whenAtP :: Label -> C -> C
-whenAtP l c = askP $ \p -> if l == labelOf (dst p) then c else botC
+whenAtP l c = askP $ \p -> if l == labelOf (tgt p) then c else botC
 
 memo :: Addr -> ProgPoint C -> C -> C
 memo a l sem = askP $ \pi ->
@@ -113,8 +113,8 @@ env !⊥ x = snd <$> env Map.!? x `orElse` botC
 
 run :: LExpr -> (Env (SIAddr, C)) -> Trace C -> Trace C
 run le env p
-  | labelOf (dst p) /= le.at = unC botC id p
-  | otherwise                = unC (go le env) (End . dst) p
+  | labelOf (tgt p) /= le.at = unC botC id p
+  | otherwise                = unC (go le env) (End . tgt) p
   where
     go :: LExpr -> (Env (SIAddr, C)) -> C
     go le !env = case le.thing of

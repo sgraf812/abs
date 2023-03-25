@@ -28,6 +28,7 @@ import qualified Stateful
 import qualified DynamicEnv
 import qualified Stackless
 import qualified Envless
+import qualified LessToFull
 
 
 main :: IO ()
@@ -135,52 +136,42 @@ prop_stackless_stateless =
     let p2' = takeT (sizeFactor*100) p2
     traceLabels p1' === traceLabels p2'
 
-prop_abs_stateless_stackless =
+prop_abs_conc_roundtrip =
   property $ do
     e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
     let le = label e
-    let p1 = Envless.run le
-    let p2 = run le Map.empty (End (E le))
-    let p1' = takeT (sizeFactor*100) p1
-    let p2' = takeT (sizeFactor*100) p2
-    traceLabels p1' === traceLabels p2'
+    let strace = takeT (sizeFactor*100) $ Stateful.run le
+    let strace' = LessToFull.forward $ LessToFull.backward strace
+    traceLabels strace === traceLabels strace'
+    let trace = takeT (sizeFactor*100) $ Stateless.runInit le
+    let trace' = LessToFull.backward $ LessToFull.forward trace
+    traceLabels trace === traceLabels trace'
 
--- Urgh, this needs the env
---prop_stateless_split_prefix =
---  property $ do
---    e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
---    n <- forAll (int (constant 1 (sizeFactor*20)))
---    let le = label e
---    let p = Stateless.runInit le
---    let pref = takeT n p
---    le' <- case dst pref of Ret _ -> discard; E le' -> pure le'
---    let suff1 = dropT n p
---    let suff2 = Stateless.run le' pref
---    let p1 = takeT (sizeFactor*40) suff1
---    let p2 = takeT (sizeFactor*40) suff2
---    let is_pref a b = NE.toList (traceLabels a) `NE.isPrefixOf` traceLabels b
---    diff p2 is_pref p1
+prop_abs_conc_continue_stateful_commutes =
+  property $ do
+    e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
+    let le = label e
+    let p1  = takeT (sizeFactor*50) $ Stateless.runInit le
+    let sp1 = LessToFull.forward p1
+    let sp2 = takeT (sizeFactor*50) $ Stateful.run le
+    diff sp1 (Stateful.observationallyEqual (10*sizeFactor)) sp2
+
+prop_stateless_split_prefix =
+  property $ do
+    e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
+    n <- forAll (int (constant 1 (sizeFactor*20)))
+    let le = label e
+    let p = Stateless.runInit le
+    let pref = takeT n p
+    le' <- case tgt pref of Ret _ -> discard; E le' -> pure le'
+    let suff1 = dropT n p
+    let suff2 = Stateless.run le' (Stateless.materialiseEnv pref) pref
+    let p1 = takeT (sizeFactor*40) suff1
+    let p2 = takeT (sizeFactor*40) suff2
+    let is_pref a b = NE.toList (traceLabels a) `NE.isPrefixOf` traceLabels b
+    diff p2 is_pref p1
 
 eqListBy :: (a -> b -> Bool) -> [a] -> [b] -> Bool
 eqListBy f []     []     = True
 eqListBy f (x:xs) (y:ys) = f x y && eqListBy f xs ys
 eqListBy _ _      _      = False
-
-dropStuffTooEarlyStateless :: (Name :-> Addr, Addr :-> (Name :-> Addr, a)) -> (Name :-> Addr, Addr :-> (Name :-> Addr))
-dropStuffTooEarlyStateless (env, heap) = (env, Map.map (\(env,_d) -> env) heap)
-
-dropStuffDynamicEnv :: (Name :-> Addr, Addr :-> (a, Name :-> Addr, b)) -> (Name :-> Addr, Addr :-> (Name :-> Addr))
-dropStuffDynamicEnv (env, heap) = (env, Map.map (\(_e,env,_d) -> env) heap)
-
---prop_Stateful_materialisable_from_stateless =
---  property $ do
---    e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
---    n <- forAll (int (constant 1 (sizeFactor*40)))
---    let le = label e
---    let ful  = map dropStuffDynamicEnv $ NE.take n $ Stateful.traceMemory $ Stateful.run le
---    let less = map dropStuffTooEarlyStateless $ NE.take n $ TooEarlyStateless.traceStates $ TooEarlyStateless.runInit le
---    let eq_state (fullenv, fullheap) (lessenv, lessheap) =
---          fullenv == lessenv &&
---          Map.map (\(_e,env,_d) -> env) fullheap == Map.map (\(env,_d) -> env) lessheap
---    ful === less
-

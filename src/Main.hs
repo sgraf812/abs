@@ -30,6 +30,9 @@ import qualified Data.List.NonEmpty as NE
 import qualified DynamicEnv
 import qualified Envless
 import qualified Stackless
+import qualified LessToFull
+import GHC.IO.Handle
+import System.IO
 
 x, y, z, a, b, c, d, e, f, i, t :: Expr
 x : y : z : a : b : c : d : e : f : i : t : _ = map (Fix . Var . (: [])) "xyzabcdefit"
@@ -47,7 +50,10 @@ e_1 :: LExpr
 e_1 = label $ lam "y" y
 
 e_2 :: LExpr
-e_2 = label $ let_ "x" (lam "y" y) (app (app x "x") "x")
+e_2 = label $ let_ "x" (lam "y" y) (app x "x")
+
+e_3 :: LExpr
+e_3 = label $ let_ "x" (lam "y" y) (app (app x "x") "x")
 
 e_bool :: LExpr
 e_bool = label $ let_ "t" (lam "a" (lam "b" a)) $
@@ -92,8 +98,7 @@ e_bug1 = label $ read "let a = (λb.let c = a in (let d = λe.a b in let f = let
 -- >>> takeT 10 $ Stateless.stateless e_2 Map.empty (End (at e_2))
 -- [1]-bind->[5]-app1->[6]-app1->[7]-look([1]_0)->[2]-val(fun)->[4]-app2->[3]-look([1]_0)->[2]-val(fun)->[4]-app2->[3]-look([1]_0)->[2]
 main :: IO ()
-main = forM_ [(15,e_1), (15,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_W), (10,e_bool), (50,e_fresh), (50,e_abs), (4,e_stuck_app), (20,e_stuck_let), (30, e_bug1)] $ \(n,e) -> do
--- main = forM_ [e_1, e2, e_stuck] $ \e -> do
+main = forM_ [(15,e_1), (15,e_2), (15,e_3), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_W), (10,e_bool), (50,e_fresh), (50,e_abs), (4,e_stuck_app), (20,e_stuck_let), (30, e_bug1)] $ \(n,e) -> do
   putStrLn "============================="
   putStrLn ""
   print e
@@ -130,6 +135,12 @@ main = forM_ [(15,e_1), (15,e_2), (10,e_stuck), (10,e_w), (10,e_w2), (10,e_W), (
   when (traceLabels stateless /= traceLabels envless) (error "stateless /= envless")
   when (traceLabels stateless /= traceLabels stackless) (error "stateless /= stackless")
   when (traceLabels stateless /= traceLabels cont) (error "stateless /= cont")
+  let p1  = takeT n $ Stateless.runInit e
+  let sp1 = LessToFull.forward p1
+  let sp2 = takeT n $ Stateful.run e
+  --mapM_ print (traceStates sp1)
+  --mapM_ print (traceStates sp2)
+  when (not $ Stateful.observationallyEqual n sp1 sp2) (error "blah")
 
 --  putStrLn "tracesAt 2"
 --  mapM_ print $ tracesAt 2 $ takeT 10 $ Stateless.stateless e Map.empty (End (at e))

@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedRecordDot #-}
@@ -12,12 +13,14 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE MonoLocalBinds #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE FlexibleContexts #-}
 
-module LessToFull (GaloisAbstraction(..)) where
+module LessToFull (Bijection, forward, backward) where
 
-import Prelude hiding (abs)
+import Prelude hiding (forward')
 import Control.Applicative
 import Control.Monad
 import Control.Monad.Trans.State
@@ -43,10 +46,86 @@ import qualified Stackless
 import qualified Envless
 import qualified DynamicEnv
 import qualified Stateful
+import Data.IORef
+import System.IO.Unsafe (unsafePerformIO)
 
-class GaloisAbstraction from to where
-  abs :: from -> to
-  conc :: to -> from
+type LessD = Stateless.D
+type FullD = Stateful.D
+data Cache = C
+  { fw_trace :: CallStack -> Trace LessD -> Trace FullD
+  , bw_trace :: CallStack -> Trace FullD -> Trace LessD
+  , fw_expr  :: CallStack -> LExpr -> LessD -> FullD
+  , bw_expr  :: CallStack -> LExpr -> FullD -> LessD
+  }
+
+key :: HasLabel (StateX d) => Trace d -> (Label, Int)
+key p = (labelOf (src p), lenT p)
+
+memo :: a -> IO Cache
+memo x = do
+  ref <- newIORef (Map.empty, Map.empty, Map.empty, Map.empty)
+  let cache :: Cache
+      cache = x `seq` C fw_trace bw_trace fw_expr bw_expr
+      fw_trace :: CallStack -> Trace LessD -> Trace FullD
+      fw_trace cs p = unsafePerformIO $ do
+        (fwt,bwt,fwe,bwe) <- readIORef ref
+        let k = key p
+        case Map.lookup k fwt of
+          Just sp -> return sp
+          Nothing -> do
+            let ?callStack = cs
+            let sp = forward' cache p
+            let !fwt' = Map.insert k sp fwt
+            writeIORef ref (fwt', bwt,fwe,bwe)
+            return sp
+      bw_trace :: CallStack -> Trace FullD -> Trace LessD
+      bw_trace cs sp = unsafePerformIO $ do
+        (fwt,bwt,fwe,bwe) <- readIORef ref
+        let k = key sp
+        case Map.lookup k bwt of
+          Just p -> return p
+          Nothing -> do
+            let ?callStack = cs
+            let p = backward' cache sp
+            let !bwt' = Map.insert k p bwt
+            writeIORef ref (fwt, bwt',fwe,bwe)
+            return p
+      fw_expr :: CallStack -> LExpr -> LessD -> FullD
+      fw_expr cs le d = unsafePerformIO $ do
+        (fwt,bwt,fwe,bwe) <- readIORef ref
+        let k = labelOf le
+        case Map.lookup k fwe of
+          Just sp -> return sp
+          Nothing  -> do
+            let ?callStack = cs
+            let sd = forward' cache d
+            let !fwe' = Map.insert k sd fwe
+            writeIORef ref (fwt, bwt,fwe',bwe)
+            return sd
+      bw_expr :: CallStack -> LExpr -> FullD -> LessD
+      bw_expr cs le sd = unsafePerformIO $ do
+        (fwt,bwt,fwe,bwe) <- readIORef ref
+        let k = labelOf le
+        case Map.lookup k bwe of
+          Just d -> return d
+          Nothing  -> do
+            let ?callStack = cs
+            let d = backward' cache sd
+            let !bwe' = Map.insert k d bwe
+            writeIORef ref (fwt, bwt,fwe,bwe')
+            return d
+  return cache
+{-# NOINLINE memo #-}
+
+forward :: HasCallStack => Bijection from to => from -> to
+forward from = forward' (unsafePerformIO (memo from)) from
+
+backward :: Bijection from to => to -> from
+backward to = backward' (unsafePerformIO (memo to)) to
+
+class Bijection from to | from -> to, to -> from where
+  forward' :: HasCallStack => Cache -> from -> to
+  backward' :: HasCallStack => Cache -> to -> from
 
 
 -----------------------------------------------
@@ -64,96 +143,72 @@ class GaloisAbstraction from to where
 --      Or on the Less side, we could require ρ to also take the ProgPoint from where to start.
 --
 
-type StatelessEnv = Env (Stateless.SIAddr, Stateless.D)
+type StatelessEnv = Env (SIAddr, LessD)
 
-concEnv :: Stateful.State -> StatelessEnv
-concEnv (_,env,_,_) = Map.map (\a -> (SI a, conc (Stateful.alternativeVar a))) env
+cachedForwardTrace :: HasCallStack => Cache -> Trace LessD -> Trace FullD
+cachedForwardTrace c = fw_trace c callStack
 
-absEnv :: StatelessEnv -> Env Addr
-absEnv = Map.map (useSemanticallyIrrelevant . fst)
+cachedBackwardTrace :: HasCallStack => Cache -> Trace FullD -> Trace LessD
+cachedBackwardTrace c = bw_trace c callStack
 
---instance GaloisAbstraction (StatelessEnv -> Stateless.D) Stateful.D where
---  abs  f = Stateful.D $ \(SI p) s -> assert (labelOf s == labelOf (dst p)) $ abs (Stateless.unD (f (concEnv s)) (conc p))
---  conc (Stateful.D d) env = Stateless.D $ \p -> let p' = abs p in conc (d (SI p') (dst p'))
+cachedForwardD :: HasCallStack => Cache -> LExpr -> LessD -> FullD
+cachedForwardD c = fw_expr c callStack
 
-instance GaloisAbstraction Stateless.D Stateful.D where
-  abs  (Stateless.D d) = Stateful.D  $ \(SI p) s -> assert (labelOf s == labelOf (dst p)) $ abs (d (conc p))
-  conc (Stateful.D d)  = Stateless.D $ \p -> let p' = abs p in conc (d (SI p') (dst p'))
+cachedBackwardD :: HasCallStack => Cache -> LExpr -> FullD -> LessD
+cachedBackwardD c = bw_expr c callStack
 
-instance GaloisAbstraction Stateless.Value Stateful.Value where
-  abs  (Stateless.Fun f) = Stateful.Fun (\a -> Stateful.D $ \p s -> Stateful.unD (abs (f (SI a,conc (Stateful.alternativeVar a)))) p s)
-  conc (Stateful.Fun f) = Stateless.Fun (\(SI a,_) -> conc (f a))
+instance Bijection LessD FullD where
+  forward'  cache (Stateless.D d) = Stateful.D  $ \sp ->
+    let p = cachedBackwardTrace cache . tgtInv $ sp
+    in dropT (lenT p) . forward' cache . concatT p . d $ p
+    -- It is vital not to call cachedForwardTrace on the result of d, because it
+    -- forces the result deeply, destroying productivity of d!
+  backward' cache (Stateful.D d)  = Stateless.D $ backward' cache . d . tgt' . cachedForwardTrace cache
+--    .
+instance Bijection Stateless.Value Stateful.Value where
+  forward'  cache (Stateless.Fun f) = Stateful.Fun (forward' cache  . f . Stateless.deref')
+  backward' cache (Stateful.Fun f) = Stateless.Fun (backward' cache . f . Stateless.derefInv)
 
---instance GaloisAbstraction (Trace Stateless.D) Stateful.State where
---  abs  p = dst (abs p :: Trace Stateful.D)
---  conc (p, env, heap, stk) = prep_cont stk $ prep_heap (Map.toList heap) $ End (mapProgPoint (const NI) p)
---    where
---      dummyLabel = -1
---      dummy_p = E (Lab dummyLabel (Var "x"))
---      prep_heap ((a,(e,d)):rest) inner =
---        prep_heap rest (ConsT dummy_p (BindA (BI "x" e a (conc d)) :: Action Stateless.D) inner)
---      prep_cont (Stateful.Update a:rest) inner =
---        ConsT dummy_p (LookupA (LI a) :: Action Stateless.D) (prep_cont rest inner)
---      prep_cont (Stateful.Apply d:rest) inner =
---        ConsT dummy_p (App1A (A1I (conc d)) :: Action Stateless.D) (prep_cont rest inner)
+forward_state :: Cache -> Trace LessD -> Stateful.State
+forward_state cache p = (fw_ctrl p (tgt p), fw_env (Stateless.materialiseEnv p), fw_heap p (Stateless.materialiseHeap' p), fw_stack p)
+  where
+    fw_ctrl :: Trace LessD -> ProgPoint LessD -> ProgPoint FullD
+    fw_ctrl p (Ret _) = Ret (sv,forward' cache v) where Just (E sv, v) = valT p
+    fw_ctrl p (E le)  = E le
 
-instance GaloisAbstraction (Trace Stateless.D) (Trace Stateful.D) where
-  abs p = go Map.empty Map.empty Map.empty (toList (splitsT p))
+    fw_env :: Env (SIAddr, LessD) -> Env Addr
+    fw_env = Map.map Stateless.derefInv
+
+    fw_heap :: Trace LessD -> (Addr :-> (LExpr, LessD)) -> Stateful.Heap
+    fw_heap p = Map.mapWithKey (\a (le, d) -> (le, fw_env $ Stateless.materialiseEnvForAddr p a, cachedForwardD cache le d))
+
+    fw_stack :: Trace LessD -> Stateful.Cont
+    fw_stack (End _) = []
+    fw_stack (SnocT p a _) = case a of
+      LookupA ui -> Stateful.Update ui.addr : fw_stack p
+      App1A ai -> Stateful.Apply (useSemanticallyIrrelevant $ fst ai.arg1) : fw_stack p
+      _ -> fw_stack p
+
+forward_action :: HasCallStack => Cache -> ProgPoint LessD -> Action LessD -> ProgPoint LessD -> Action FullD
+forward_action cache _ a _ = case a of
+  ValA{} -> ValA NI
+  UpdateA ui -> UpdateA ui
+  LookupA li -> LookupA li
+  BindA bi -> BindA (bi { denot =  cachedForwardD cache bi.rhs bi.denot })
+  App1A ai -> App1A (A1I (Stateless.derefInv ai.arg1))
+  App2A ai -> App2A (ai { arg = Stateless.derefInv ai.arg })
+
+instance Bijection (Trace LessD) (Trace FullD) where
+  forward' cache = mapTraceWithPrefixes (forward_state cache) (forward_action cache)
+  backward' cache = mapTraceWithPrefixes forget_ret (backward_action cache)
     where
-      mk_state_at :: ProgPoint Stateless.D -> Trace Stateless.D -> Env Addr -> Stateful.Heap -> Stateful.State
-      mk_state_at p pref env heap
-        | Ret NI <- p, let Just (E sv,v) = valT pref
-        = (Ret (sv, abs v), env, heap, mk_cont pref)
-        | E e <- p
-        = (E e, env, heap, mk_cont pref)
-      mk_cont :: Trace Stateless.D -> Stateful.Cont
-      mk_cont (End _) = []
-      mk_cont (ConsT _ act t) = case act of
-        LookupA a -> Stateful.Update a.addr : mk_cont t
-        App1A d   -> Stateful.Apply (useSemanticallyIrrelevant $ fst d.arg1) : mk_cont t
-        _         -> mk_cont t
-
-      go :: (Addr :-> StatelessEnv) -> StatelessEnv -> Stateful.Heap -> [(Trace Stateless.D,Trace Stateless.D)] -> Trace Stateful.D
-      go envs env heap ((pref,suff):rest) = case suff of
-        End l -> End (mk_state_at l pref (absEnv env) heap)
-        ConsT l a p -> ConsT (mk_state_at l pref (absEnv env) heap) a' $ case a of
-          BindA bi ->
-            let env' = Map.insert bi.name (SI bi.addr, bi.denot) env
-                envs' = Map.insert bi.addr env' envs
-                heap' = Map.insert bi.addr (bi.rhs, abs bi.denot :: Stateful.D)
-             in go envs' env' heap rest
-          LookupA a -> go envs (envs Map.! a.addr) heap rest
-          UpdateA a ->
-            let Just (E sv,v) = valT pref
-                d = Stateless.wrapLookup a.addr (E sv) (Stateless.step (ValA v) (Ret NI))
-             in go (Map.insert a.addr env envs) env (Map.insert a.addr (sv, (absEnv env), abs d) heap) rest
-          ValA v ->
-            go envs env heap rest
-          App1A _ ->
-            go envs env heap rest
-          App2A ai ->
-            go envs (Map.insert ai.name ai.arg env) heap rest
-          where
-            a' = case a of
-              ValA{} -> ValA NI
-              UpdateA ui -> UpdateA ui
-              LookupA li -> LookupA li
-              BindA bi -> BindA (bi { denot = abs bi.denot })
-              App1A ai -> App1A (A1I (useSemanticallyIrrelevant $ fst $ ai.arg1))
-              App2A ai -> App2A (ai { arg = useSemanticallyIrrelevant $ fst $ ai.arg })
-
-  conc t = go t
-    where
-      forget_ret = mapProgPoint (const NI)
-      go (End (p,_,_,_)) = End (forget_ret p)
-      go (ConsT (p,_,_,_) a rest) =
-        ConsT (forget_ret p) a' (go rest)
-          where
-            a' = case a of
-              ValA _ | (Ret (_,v),_,_,_) <- src rest -> ValA (conc v)
-              UpdateA ui -> UpdateA ui
-              LookupA li -> LookupA li
-              BindA bi -> BindA (bi { denot = conc bi.denot })
-              App1A ai -> App1A (A1I (SI ai.arg1, conc (Stateful.alternativeVar ai.arg1)))
-              App2A ai -> App2A (ai { arg = (SI ai.arg, conc (Stateful.alternativeVar ai.arg)) })
+      forget_ret sp | (c,_,_,_) <- tgt sp = mapProgPoint (const NI) c
+      backward_action :: Cache -> Stateful.State -> Action FullD -> Stateful.State -> Action LessD
+      backward_action cache _ a q = case a of
+        ValA _ | (Ret (_,v),_,_,_) <- q -> ValA (backward' cache v)
+        UpdateA ui -> UpdateA ui
+        LookupA li -> LookupA li
+        BindA bi -> BindA (bi { denot = cachedBackwardD cache bi.rhs bi.denot })
+        App1A ai -> App1A (A1I (Stateless.deref' ai.arg1))
+        App2A ai -> App2A (ai { arg = (Stateless.deref' ai.arg) })
 

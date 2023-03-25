@@ -84,7 +84,7 @@ step fun = D $ \s -> case fun s of
   Just (a, t)  -> ConsT s a t
 
 (>.>) :: D -> D -> D
-D d1 >.> D d2 = D $ \s -> let p = d1 s in p `concatT` d2 (dst p)
+D d1 >.> D d2 = D $ \s -> let p = d1 s in p `concatT` d2 (tgt p)
 
 run :: LExpr -> Trace D
 run le = unD (runD le) (E le,Map.empty,Map.empty,[])

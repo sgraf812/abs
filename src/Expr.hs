@@ -43,6 +43,10 @@ assert :: HasCallStack => Bool -> a -> a
 assert True  x = x
 assert False _ = error "assertion failure"
 
+assertMsg :: HasCallStack => Bool -> String -> a -> a
+assertMsg True  _   x = x
+assertMsg False msg _ = error ("assertion failure: " ++ msg)
+
 type Name = String
 
 data ExprF expr
@@ -235,6 +239,10 @@ type Val = LExpr
 
 data ProgPoint d = Ret !(RetX d) | E !LExpr
 
+isRet :: ProgPoint d -> Bool
+isRet (Ret _) = True
+isRet _       = False
+
 mapProgPoint :: (RetX d1 -> RetX d2) -> ProgPoint d1 -> ProgPoint d2
 mapProgPoint f (Ret d1) = Ret (f d1)
 mapProgPoint _ (E e) = E e
@@ -271,7 +279,7 @@ type family EnvRng d
 data NoInfo = NI deriving Eq
 instance Show NoInfo where show _ = ""
 
-data BindInfo d = BI { name :: !Name, rhs :: !LExpr, addr :: !Addr, denot :: !d }
+data BindInfo d = BI { name :: !Name, rhs :: !LExpr, addr :: !Addr, denot :: d }
 instance Eq (BindInfo d) where bi1 == bi2 = bi1.name == bi2.name && bi1.addr == bi2.addr
 instance Show (BindInfo d) where show bi = "(" ++ bi.name ++ "↦" ++ show bi.addr ++ ")"
 
@@ -293,7 +301,7 @@ data Action d
   = ValA !(ValX d)
   | App1A !(App1Info d)
   | App2A !(App2Info d)
-  | BindA !(BindInfo d)
+  | BindA (BindInfo d)
   | LookupA !LookupInfo
   | UpdateA !UpdateInfo
 
@@ -326,13 +334,13 @@ instance (Show (Action d), Show (StateX d)) => Show (Trace d) where
 sameLabelsInTrace :: (HasLabel (StateX d1), HasLabel (StateX d2)) => Trace d1 -> Trace d2 -> Bool
 sameLabelsInTrace t1 t2 = traceLabels t1 == traceLabels t2
 
-src, dst :: Trace d -> StateX d
+src, tgt :: Trace d -> StateX d
 src (End l) = l
 src (ConsT l _ _) = l
 src (SnocT t _ _) = src t
-dst (End l) = l
-dst (SnocT _ _ l) = l
-dst (ConsT _ _ t) = dst t
+tgt (End l) = l
+tgt (SnocT _ _ l) = l
+tgt (ConsT _ _ t) = tgt t
 
 consifyT :: Trace d -> Trace d
 consifyT t = go End t
@@ -352,25 +360,25 @@ concatT :: (HasCallStack, HasLabel (StateX d)) => Trace d -> Trace d -> Trace d
 concatT t1 t2 = con t1 t2
   where
     con (End l) t2 = assert (labelOf l == labelOf (src t2)) t2
-    con (SnocT t1 a l) t2 = con t1 (assert (labelOf l == labelOf (src t2)) (ConsT (dst t1) a t2))
+    con (SnocT t1 a l) t2 = con t1 (ConsT (tgt t1) a (assert (labelOf l == labelOf (src t2)) t2))
     con (ConsT l a t1) t2 = ConsT l a (con t1 t2)
 
 takeT :: Int -> Trace d -> Trace d
-takeT n t = go n (consifyT t)
+takeT n t = go n t
   where
     go 0 (ConsT l _ _) = End l
     go _ (End l) = End l
     go n (ConsT l a t) = ConsT l a (takeT (n - 1) t)
-    go _ SnocT {} = error "impossible"
+    go n t@SnocT{} = go n (consifyT t)
 
 dropT :: Int -> Trace d -> Trace d
 dropT 0 t = t
-dropT n t = go n (consifyT t)
+dropT n t = go n t
   where
     go 0 t = t
     go _ (End l) = End l
     go n (ConsT _ _ t) = dropT (n - 1) t
-    go _ SnocT{} = error "impossible"
+    go n t@SnocT{} = go n (consifyT t)
 
 lenT :: Trace d -> Int
 lenT (End _) = 0
@@ -387,17 +395,17 @@ splitsT t = go (takeT 0 t') t'
     go pref (ConsT l a suff) = (pref, End l) `NE.cons` go (SnocT pref a l) suff
 
 valT :: Trace d -> Maybe (StateX d, ValX d)
-valT t = go (snocifyT t)
+valT t = go t
   where
+    go t@ConsT{} = go (snocifyT t)
     go (End _) = Nothing
     go (SnocT t a l) = case a of
-      ValA v    -> Just (dst t, v)
+      ValA v    -> Just (tgt t, v)
       App1A{}   -> Nothing
       App2A{}   -> Nothing
       BindA{}   -> Nothing
       LookupA{} -> Nothing
       UpdateA{} -> go t
-    go ConsT {} = error "invalid"
 
 val :: Trace d -> Maybe (ValX d)
 val t = snd <$> valT t
@@ -421,24 +429,26 @@ pointwise sem e p l = map (concatT p) $ tracesAt l $ sem e p
 -- | Turns a maximal finite or infinite trace into the list of its prefix
 -- traces. The list is finite iff the incoming trace is.
 prefs :: Trace d -> NonEmpty (Trace d)
-prefs t = go (consifyT t)
+prefs = go
   where
     go t = case t of
       End l -> NE.singleton t
       ConsT l a t' -> End l `NE.cons` fmap (ConsT l a) (go t')
-      SnocT{} -> undefined
+      SnocT{} -> go (consifyT t)
 
 traceLabels :: HasLabel (StateX d) => Trace d -> NonEmpty Label
-traceLabels = go . consifyT
+traceLabels = go
   where
     go (End l) = pure (labelOf l)
     go (ConsT l _ t) = labelOf l `NE.cons` go t
+    go t@SnocT{} = go (consifyT t)
 
 traceStates :: Trace d -> NonEmpty (StateX d)
-traceStates = go . consifyT
+traceStates = go
   where
     go (End s) = pure s
     go (ConsT s _ t) = s `NE.cons` go t
+    go t@SnocT{} = go (consifyT t)
 
 subst :: Name -> Name -> Expr -> Expr
 subst x y (Fix e) = Fix $ case e of
@@ -490,7 +500,7 @@ splitBalancedPrefix p = -- traceIt (\(r,_)->"split" ++ "\n"  ++ show (takeT 3 p)
               Just (ConsT l2 (App2A x) p2) ->
                 let (p3, mp4) = work p2
                  in (ConsT l2 (App2A x) p3,mp4)
-              _ -> (End (dst p1), Nothing)
+              _ -> (End (tgt p1), Nothing)
          in (pref `concatT` suff,mp')
       LookupA a ->
         let (p1, mp2) = work p
@@ -500,7 +510,7 @@ splitBalancedPrefix p = -- traceIt (\(r,_)->"split" ++ "\n"  ++ show (takeT 3 p)
                 -- NB: In contrast to App1A, we don't need to end with a
                 --     balanced p2
                 (ConsT l2 (UpdateA a) (End (src p2)), Just p2)
-              _ -> (End (dst p1), Nothing)
+              _ -> (End (tgt p1), Nothing)
          in (pref `concatT` suff,mp')
       App2A _   -> (p',Nothing) -- Not balanced; one closing parens too many
       UpdateA{} -> (p',Nothing) -- Not balanced; one closing parens too many
@@ -508,7 +518,7 @@ splitBalancedPrefix p = -- traceIt (\(r,_)->"split" ++ "\n"  ++ show (takeT 3 p)
 -- | Loop indefinitely for infinite traces!
 isBalanced :: HasLabel (StateX d) => (Eq (Trace d), Show d) => Trace d -> Bool
 isBalanced p = case splitBalancedPrefix p of
-  (p', Just (End l)) | labelOf l == labelOf (dst p) -> p' == p
+  (p', Just (End l)) | labelOf l == labelOf (tgt p) -> p' == p
   _                                                 -> False
 
 data Lifted a = Lifted !a
@@ -558,14 +568,44 @@ uniqify e = evalState (go Map.empty e) Set.empty
 -- | A wrapper indicating that this thing does not influence the semantics in
 -- any way and is just there to carry constructive proof for use in the Galois
 -- Abstraction
-newtype SemanticallyIrrelevant a = SI { useSemanticallyIrrelevant :: a }
+newtype SemanticallyIrrelevant a = SI { useSemanticallyIrrelevant :: a } deriving Show
 
 -- | An address we promise to *never* look at in `run`.
 -- It is only there so that we can write the bijection to Stateful semantics.
 type SIAddr = SemanticallyIrrelevant Addr
 
+-- | Wraps a function `f` such that it returns the dependent sum `∃a.f a`,
+-- allowing us to extract both the `b = f a` and the `a` from whence it came
+-- via `tgtInv`
+mkInvertible :: (a -> b) -> (a -> (SemanticallyIrrelevant a, b))
+mkInvertible f a = (SI a, f a)
+
+-- | Corresponds to the dependent sum (∃p.tgt p),
+-- allowing us to extract both the s = tgt p and the p from whence it came
+-- via `tgtInv`
+tgt' :: Trace d -> (SemanticallyIrrelevant (Trace d), StateX d)
+tgt' = mkInvertible tgt
+
+tgtInv :: Show (StateX d) => HasCallStack => HasLabel (StateX d) => (SemanticallyIrrelevant (Trace d), StateX d) -> Trace d
+tgtInv (SI p, s) = p
+
 orElse = flip fromMaybe
 infixl 1 `orElse`
+
+mapTraceWithPrefixes
+  :: HasLabel (StateX d1)
+  => (Trace d1 -> StateX d2) -- ^ Map an old prefix to a new state
+  -> (StateX d1 -> Action d1 -> StateX d1 -> Action d2) -- ^ Map an action and its before/after state to a new action
+  -> Trace d1 -- ^ old trace
+  -> Trace d2 -- ^ new state
+mapTraceWithPrefixes st act p = go End p
+  where
+    go mk_pref p = case p of
+      ConsT s a p' ->
+        let pref = mk_pref s
+        in sum (traceLabels pref) `seq` ConsT (st pref) (act s a (src p')) (go (SnocT pref a) p')
+      End s -> End (st (mk_pref s))
+      SnocT p' a s -> SnocT (go mk_pref p') (act (tgt p') a s) (st (mk_pref (src p') `concatT` p))
 
 ---- | Potential liveness abstraction
 --absL :: Set Name -> Trace d -> Set Name
@@ -576,3 +616,5 @@ infixl 1 `orElse`
 --      BindA n addr _ -> go (Map.insert addr n env) p
 --      LookupA addr   -> Set.insert (env Map.! addr) (go env p)
 --      _              -> go env p
+
+traceWith f a = trace (f a) a
