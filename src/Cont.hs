@@ -131,7 +131,7 @@ run le env p
         let val = Fun (\c -> App2A (A2I n c) >-> E le' <++> go le' (Map.insert n c env))
          in step (ValA val) (Ret NI)
       Let n le1 le2 -> askP $ \p ->
-        let a = hash p
+        let a = alloc p
             c = memo a (E le1) (go le1 env')
             env' = Map.insert n (SI a,c) env
          in step (BindA (BI n le1 a c)) (E le2) <++> go le2 env'

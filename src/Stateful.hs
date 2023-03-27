@@ -11,7 +11,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE TypeFamilies #-}
 
-module Stateful (D(..), run, runD, observationallyEqual,
+module Stateful (D(..), run, runD, bisimilarForNSteps,
                   State, Env, Heap, Cont, Frame(..), SITrace, Value(..), step, alternativeVar) where
 
 import Control.Applicative
@@ -40,7 +40,7 @@ type Cont = [Frame]
 data Frame
   = Apply Addr
   | Update Addr
-  deriving Show
+  deriving (Eq, Show)
 type State = (ProgPoint D, Env Addr, Heap, Cont)
 
 instance HasLabel State where
@@ -150,13 +150,25 @@ let_ d1 (_, (E (LLet x e1 e2), env,heap,cont))
   = Just (BindA (BI x e1 a d1), End (E e2, env', Map.insert a (e1, env', d1) heap, cont))
 let_ _ _ = Nothing
 
+firstDiff :: Trace D -> Trace D -> Maybe ((State,State), (State,State))
+firstDiff p1 p2 = find (uncurry (/=)) $ zip ss1 ss2
+  where
+    s1 = toList $ traceStates p1
+    ss1 = zip s1 (tail s1)
+    s2 = toList $ traceStates p2
+    ss2 = zip s2 (tail s2)
+
 -- | Run 2 states in parallel and see if they produce the same trace (as far as
 -- labels are concerned), up to a certain length.
-observationallyEqual :: Int -> Trace Stateful.D -> Trace Stateful.D -> Bool
-observationallyEqual n p1 p2 = case (continue p1, continue p2) of
+bisimilarForNSteps :: Int -> Trace D -> Trace D -> Bool
+bisimilarForNSteps n p1 p2 = case (continue p1, continue p2) of
+  --(Just p1', Just p2') -> s p1' p2' $ traceLabels p1' == traceLabels p2'
   (Just p1', Just p2') -> traceLabels p1' == traceLabels p2'
   (Nothing, Nothing)   -> True  -- can't handle return states
   _                    -> False -- one p1 resulted in a return state
   where
-    continue p | (E le, _, _ , _) <- tgt p = Just (takeT n $ Stateful.unD (Stateful.runD le) (tgt' p))
+    continue p | (E le, _, _ , _) <- tgt p = Just (takeT n $ unD (runD le) (tgt' p))
                | otherwise                 = Nothing
+    s p1 p2 = case (firstDiff p1 p2) of
+      Just ((s11,s12), (s21, s22)) -> trace (assert (s11 == s21) "\n" ++ show s11 ++ "\n\n" ++ show s12 ++ "\n" ++ show s22 ++ "\n")
+      Nothing -> id

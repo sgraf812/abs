@@ -16,7 +16,8 @@
 
 module Stateless (D(..), Value(Fun), runInit, run, runD,
                   SIAddr, deref', derefInv, step, stepm,
-                  materialiseEnv, materialiseEnvForAddr, materialiseHeap') where
+                  materialiseEnv, materialiseEnvForAddr, materialiseHeap',
+                  bisimilarForNSteps) where
 
 import Control.Applicative
 import Control.Monad
@@ -152,7 +153,7 @@ runD le env = go le env
         let val = Fun (\d -> step (App2A (A2I n d)) (E le') >.> go le' (Map.insert n d env))
          in step (ValA val) (Ret NI)
       Let n le1 le2 -> askP $ \p ->
-        let a = hash p
+        let a = alloc p
             env' = Map.insert n (deref' a) env
          in step (BindA (BI n le1 a (go le1 env'))) (E le2) >.> go le2 env'
     blah (ConsT _ a _) = a
@@ -181,7 +182,7 @@ materialiseHeap' pi = go pi
 -- | μ_ρ, the (missing) middle component of the stateful heap, calculating the
 -- environment for a heap entry
 materialiseEnvForAddr :: HasCallStack => Trace D -> Addr -> Env (SIAddr, D)
-materialiseEnvForAddr p a = go (snocifyT p)
+materialiseEnvForAddr p a = go p
   where
     go p@ConsT{} = go (snocifyT p)
     go   (End l) = Map.empty
@@ -200,3 +201,15 @@ materialiseEnv p = go p
       App2A ai   -> Map.insert ai.name ai.arg (go p)
       LookupA li -> materialiseEnvForAddr p li.addr
       _          -> go p
+
+-- | Run 2 states in parallel and see if they produce the same trace (as far as
+-- labels are concerned), up to a certain length.
+bisimilarForNSteps :: Int -> Trace Stateless.D -> Trace Stateless.D -> Bool
+bisimilarForNSteps n p1 p2 = case (continue p1, continue p2) of
+  (Just (env1', p1'), Just (env2', p2'))
+    -> env1' == env2' && traceLabels p1' == traceLabels p2'
+  (Nothing, Nothing)   -> True  -- can't handle return states
+  _                    -> False -- one p1 resulted in a return state
+  where
+    continue p | E le <- tgt p = Just (materialiseEnv p, takeT n $ run le (materialiseEnv p) p)
+               | otherwise     = Nothing

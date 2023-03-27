@@ -140,36 +140,47 @@ prop_abs_conc_roundtrip =
   property $ do
     e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
     let le = label e
-    let strace = takeT (sizeFactor*100) $ Stateful.run le
+    let strace = takeT (sizeFactor*50) $ Stateful.run le
     let strace' = LessToFull.forward $ LessToFull.backward strace
-    traceLabels strace === traceLabels strace'
-    let trace = takeT (sizeFactor*100) $ Stateless.runInit le
+    strace === strace'
+    let trace = takeT (sizeFactor*50) $ Stateless.runInit le
     let trace' = LessToFull.backward $ LessToFull.forward trace
-    traceLabels trace === traceLabels trace'
+    trace === trace'
 
-prop_abs_conc_continue_stateful_commutes =
+prop_abs_continue_stateful_commutes =
   property $ do
     e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
     let le = label e
-    let p1  = takeT (sizeFactor*50) $ Stateless.runInit le
-    let sp1 = LessToFull.forward p1
-    let sp2 = takeT (sizeFactor*50) $ Stateful.run le
-    diff sp1 (Stateful.observationallyEqual (10*sizeFactor)) sp2
+    forM_ [1..20*sizeFactor] $ \n -> do
+      let p1  = takeT n $ Stateless.runInit le
+      let sp1 = LessToFull.forward p1
+      let sp2 = takeT n $ Stateful.run le
+      diff sp1 (Stateful.bisimilarForNSteps 20) sp2
+
+prop_conc_continue_stateless_commutes =
+  property $ do
+    e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
+    let le = label e
+    forM_ [1..20*sizeFactor] $ \n -> do
+      let p1  = takeT n $ Stateful.run le
+      let sp1 = LessToFull.backward p1
+      let sp2 = takeT n $ Stateless.runInit le
+      diff sp1 (Stateless.bisimilarForNSteps 20) sp2
 
 prop_stateless_split_prefix =
   property $ do
     e <- forAll (Gen.openExpr (Gen.mkEnvWithNVars 2))
-    n <- forAll (int (constant 1 (sizeFactor*20)))
-    let le = label e
-    let p = Stateless.runInit le
-    let pref = takeT n p
-    le' <- case tgt pref of Ret _ -> discard; E le' -> pure le'
-    let suff1 = dropT n p
-    let suff2 = Stateless.run le' (Stateless.materialiseEnv pref) pref
-    let p1 = takeT (sizeFactor*40) suff1
-    let p2 = takeT (sizeFactor*40) suff2
-    let is_pref a b = NE.toList (traceLabels a) `NE.isPrefixOf` traceLabels b
-    diff p2 is_pref p1
+    forM_ [1..20] $ \n -> do
+      let le = label e
+      let p = Stateless.runInit le
+      let pref = takeT n p
+      le' <- case tgt pref of Ret _ -> discard; E le' -> pure le'
+      let suff1 = dropT n p
+      let suff2 = Stateless.run le' (Stateless.materialiseEnv pref) pref
+      let p1 = takeT (sizeFactor*40) suff1
+      let p2 = takeT (sizeFactor*40) suff2
+      let is_pref a b = NE.toList (traceLabels a) `NE.isPrefixOf` traceLabels b
+      diff p2 is_pref p1
 
 eqListBy :: (a -> b -> Bool) -> [a] -> [b] -> Bool
 eqListBy f []     []     = True

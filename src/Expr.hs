@@ -163,6 +163,9 @@ data Labelled f = Lab
   , thing :: !(f (Labelled f))
   }
 
+instance Eq (Labelled f) where
+  l1 == l2 = l1.at == l2.at
+
 type LExpr = Labelled ExprF
 pattern LVar n <- (thing -> Var n)
 pattern LApp e x <- (thing -> App e x)
@@ -189,6 +192,7 @@ instance Show (RetX d) => Show (ProgPoint d) where
 instance Eq (ProgPoint d) where
   Ret _ == Ret _ = True
   E e1 == E e2 = e1.at == e2.at
+  _ == _ = False
 
 label :: Expr -> LExpr
 label (Fix e) = evalState (lab e) 1
@@ -258,8 +262,14 @@ isVal _      = False
 
 type Addr = Int
 
-hash :: Trace d -> Addr
-hash = lenT
+-- | Must be injective in the trace; but for conformance to the stateful
+-- semantics, we'll return the number of bind actions in the trace
+alloc :: Trace d -> Addr
+alloc (End l) = 0
+alloc (ConsT _ (BindA _) p) = alloc p + 1
+alloc (ConsT _ _         p) = alloc p
+alloc (SnocT p (BindA _) _) = alloc p + 1
+alloc (SnocT p _         _) = alloc p
 
 class HasLabel s where
   labelOf :: s -> Label
@@ -279,7 +289,7 @@ type family EnvRng d
 data NoInfo = NI deriving Eq
 instance Show NoInfo where show _ = ""
 
-data BindInfo d = BI { name :: !Name, rhs :: !LExpr, addr :: !Addr, denot :: d }
+data BindInfo d = BI { name :: !Name, rhs :: !LExpr, addr :: !Addr, denot :: !d }
 instance Eq (BindInfo d) where bi1 == bi2 = bi1.name == bi2.name && bi1.addr == bi2.addr
 instance Show (BindInfo d) where show bi = "(" ++ bi.name ++ "↦" ++ show bi.addr ++ ")"
 
@@ -295,13 +305,13 @@ instance Show (App1Info d) where show ai = ""
 
 data App2Info d = A2I { name :: !Name, arg :: !(EnvRng d) }
 instance Eq (App2Info d) where ai1 == ai2 = ai1.name == ai2.name
-instance Show (App2Info d) where show ai = "(" ++ show ai.name ++ ")"
+instance Show (App2Info d) where show ai = "(" ++ ai.name ++ ")"
 
 data Action d
   = ValA !(ValX d)
   | App1A !(App1Info d)
   | App2A !(App2Info d)
-  | BindA (BindInfo d)
+  | BindA !(BindInfo d)
   | LookupA !LookupInfo
   | UpdateA !UpdateInfo
 
@@ -568,7 +578,7 @@ uniqify e = evalState (go Map.empty e) Set.empty
 -- | A wrapper indicating that this thing does not influence the semantics in
 -- any way and is just there to carry constructive proof for use in the Galois
 -- Abstraction
-newtype SemanticallyIrrelevant a = SI { useSemanticallyIrrelevant :: a } deriving Show
+newtype SemanticallyIrrelevant a = SI { useSemanticallyIrrelevant :: a } deriving (Eq, Show)
 
 -- | An address we promise to *never* look at in `run`.
 -- It is only there so that we can write the bijection to Stateful semantics.
