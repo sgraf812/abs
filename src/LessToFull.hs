@@ -151,7 +151,7 @@ instance Bijection Stateless.Value Stateful.Value where
   backward' cache (Stateful.Fun f) = Stateless.Fun (traceWrap "backward' @D" (\p -> "") (\p -> "") (backward' cache) . f . Stateless.derefInv)
 
 forward_state :: Cache -> Trace LessD -> Stateful.State
-forward_state cache p = (fw_ctrl p (tgt p), fw_env (Stateless.materialiseEnv p), fw_heap p (Stateless.materialiseHeap' p), fw_stack [] p)
+forward_state cache p = (fw_ctrl p (tgt p), fw_env (Stateless.materialiseEnv p), fw_heap p (Stateless.materialiseHeap' p), fw_stack (snocifyT p))
   where
     fw_ctrl :: Trace LessD -> ProgPoint LessD -> ProgPoint FullD
     fw_ctrl p (Ret _) = Ret (sv,forward' cache v) where Just (E sv, v) = valT p
@@ -163,28 +163,30 @@ forward_state cache p = (fw_ctrl p (tgt p), fw_env (Stateless.materialiseEnv p),
     fw_heap :: Trace LessD -> (Addr :-> (LExpr, LessD)) -> Stateful.Heap
     fw_heap p = Map.mapWithKey (\a (le, d) -> (le, fw_env $ Stateless.materialiseEnvForAddr p a, Stateful.D $ \p -> Stateful.unD (forward' cache d) p ))
 
-    fw_stack :: Stateful.Cont -> Trace LessD -> Stateful.Cont
-    fw_stack stk (End _) = stk
-    fw_stack stk (SnocT p a _) = case a of
-      LookupA ui -> Stateful.Update ui.addr : fw_stack stk p
-      App1A ai -> Stateful.Apply (Stateless.derefInv ai.arg1) : fw_stack stk p
+    fw_stack :: Trace LessD -> Stateful.Cont
+    fw_stack p@ConsT{} = fw_stack (snocifyT p)
+    fw_stack (End _) = []
+    fw_stack (SnocT p a _) = case a of
+      LookupA ui -> Stateful.Update ui.addr : fw_stack p
+      App1A ai -> Stateful.Apply (Stateless.derefInv ai.arg1) : fw_stack p
       UpdateA ui
-        | Stateful.Update a:stk <- fw_stack stk p, a == ui.addr -> stk
+        | Stateful.Update a:stk <- fw_stack p, a == ui.addr -> stk
         | otherwise -> error ("Could not pop " ++ show ui.addr)
       App2A ai
-        | Stateful.Apply a:stk <- fw_stack stk p, a == Stateless.derefInv ai.arg -> stk
+        | Stateful.Apply a:stk <- fw_stack p, a == Stateless.derefInv ai.arg -> stk
         | otherwise -> error ("Could not pop " ++ show (Stateless.derefInv ai.arg))
-      _ -> fw_stack stk p
-    fw_stack stk (ConsT _ a p) = case a of
-      LookupA ui -> fw_stack (Stateful.Update ui.addr : stk) p
-      App1A ai -> fw_stack (Stateful.Apply (Stateless.derefInv ai.arg1) : stk) p
-      UpdateA ui
-        | Stateful.Update a:stk' <- stk, a == ui.addr -> stk'
-        | otherwise -> error ("Could not pop " ++ show ui.addr)
-      App2A ai
-        | Stateful.Apply a:stk' <- stk, a == Stateless.derefInv ai.arg -> stk'
-        | otherwise -> error ("Could not pop " ++ show (Stateless.derefInv ai.arg))
-      _ -> fw_stack stk p
+      _ -> fw_stack p
+-- Fortunately, we can just snocify instead of using the following definition coping with ConsT:
+--    fw_stack stk (ConsT _ a p) = case a of
+--      LookupA ui -> fw_stack (Stateful.Update ui.addr : stk) p
+--      App1A ai -> fw_stack (Stateful.Apply (Stateless.derefInv ai.arg1) : stk) p
+--      UpdateA ui
+--        | Stateful.Update a:stk' <- stk, a == ui.addr -> stk'
+--        | otherwise -> error ("Could not pop " ++ show ui.addr)
+--      App2A ai
+--        | Stateful.Apply a:stk' <- stk, a == Stateless.derefInv ai.arg -> stk'
+--        | otherwise -> error ("Could not pop " ++ show (Stateless.derefInv ai.arg))
+--      _ -> fw_stack stk p
 
 forward_action :: HasCallStack => Cache -> ProgPoint LessD -> Action LessD -> ProgPoint LessD -> Action FullD
 forward_action cache _ a _ = case a of
