@@ -60,10 +60,6 @@ type instance StateX D = State
 type instance ValX D = NoInfo
 type instance EnvRng D = Addr
 
--- | The bottom element of the partial pointwise prefix ordering on `D`.
-botD :: D
-botD = D (\(_,p) -> End p)
-
 type PartialD = (SITrace, State) -> Maybe (Action D, Trace D)
 
 injD :: Action D -> D -> PartialD
@@ -89,7 +85,7 @@ apply = D $ \(p, s) -> case s of
 
 runD :: LExpr -> D
 runD le = D $ \(p, s) -> case s of
-  (E le',_,_,_) | le.at /= le'.at -> unD botD (p, s)
+  (E le',_,_,_) | le.at /= le'.at -> error "label mismatch => bottom"
   _                               -> unD (go le) (p, s)
   where
     go :: LExpr -> D

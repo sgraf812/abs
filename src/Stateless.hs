@@ -41,26 +41,6 @@ import GHC.Stack
 import qualified Stateful
 import qualified Stackless
 
--- | Finite intialisation trace to infinite or maximal finite trace.
---
--- This type is actually the subtype of `Trace -> Trace` for which every
--- inhabitant `d` satisfies `src(d(p)) = tgt(p)`.
---
--- We can give a partial pointwise prefix order ⊑:
---
--- d1(p) ⊑ d2(p)  <=>  ∃p'. d1(p) `concatT` p' = d2(p)
---
--- Note that a `D` is *not* a monotone map; indeed our semantics isn't.
--- The ordering is to be understood pointwise, ⊑^. .
---
--- There exists a bottom element `⊥(p) = End (tgt p)` and directed sets have a
--- the pointwise supremum ⊔^.
--- (Finite case is simply the max element; infinite case is the limit of the
--- prefix traces).
--- Thus, (D,⊑^.,⊥,⊔^.) forms a CPO with bottom element ⊥.
--- Note that ⊥ represents an expression that is stuck in every context;
--- values do at least another step in our semantics.
---
 newtype D = D { unD :: Trace D -> Trace D }
 instance Eq D where _ == _ = True
 instance Show D where show _ = "D"
@@ -81,9 +61,8 @@ type instance ValX D = Value
 -- exists Addr `a` such that D is `deref a`
 type instance EnvRng D = (SIAddr, D)
 
--- | The bottom element of the partial pointwise prefix ordering on `D`.
-botD :: D
-botD = D (\p -> End (tgt p))
+stay :: D
+stay = D (\p -> End (tgt p))
 
 concatD :: HasCallStack => D -> D -> D
 concatD (D d1) (D d2) = D $ \p -> let p1 = d1 p in p1 `concatT` (d2 (p `concatT` p1))
@@ -96,18 +75,18 @@ infixr 5 >.>
 askP :: (Trace D -> D) -> D
 askP f = D $ \p -> unD (f p) p
 
-whenP :: Maybe a -> (a -> D) -> D
-whenP Nothing  _ = botD
-whenP (Just a) d = d a
+stayUnlessP :: Maybe a -> (a -> D) -> D
+stayUnlessP Nothing  _ = stay
+stayUnlessP (Just a) d = d a
 
-whenAtP :: ProgPoint D -> D -> D
-whenAtP l d = askP $ \p -> if labelOf l == labelOf (tgt p) then d else botD
+unlessAtP :: ProgPoint D -> D -> D -> D
+unlessAtP l not_d d = askP $ \p -> if labelOf l /= labelOf (tgt p) then not_d else d
 
 step :: Action D -> ProgPoint D -> D
 step a l = D $ \p -> ConsT (tgt p) a (End l)
 
 stepm :: ProgPoint D -> Action D -> ProgPoint D -> D
-stepm l1 a l2 = whenAtP l1 (step a l2)
+stepm l1 a l2 = unlessAtP l1 stay (step a l2)
 
 deref :: HasCallStack => Addr -> D
 deref a = askP $ \pi -> case materialiseHeap pi a of
@@ -142,12 +121,12 @@ runD :: LExpr -> Env (SIAddr, D) -> D
 runD le env = go le env
   where
     (!⊥) :: Ord a => (a :-> (SIAddr, D)) -> a -> D
-    env !⊥ x = snd <$> env Map.!? x `orElse` botD
+    env !⊥ x = snd <$> env Map.!? x `orElse` stay
     go :: LExpr -> Env (SIAddr, D) -> D
-    go le !env = whenAtP (E le) $ case le.thing of
+    go le !env = unlessAtP (E le) (error "bottom") $ case le.thing of
       Var n -> env !⊥ n
-      App le n -> whenP (Map.lookup n env) $ \d ->
-        let apply = askP $ \p -> whenP (val p) $ \(Fun f) -> f d
+      App le n -> stayUnlessP (Map.lookup n env) $ \d ->
+        let apply = askP $ \p -> stayUnlessP (val p) $ \(Fun f) -> f d
          in step (App1A (A1I d)) (E le) >.> go le env >.> apply
       Lam n le' ->
         let val = Fun (\d -> step (App2A (A2I n d)) (E le') >.> go le' (Map.insert n d env))
@@ -156,7 +135,6 @@ runD le env = go le env
         let a = alloc p
             env' = Map.insert n (deref' a) env
          in step (BindA (BI n le1 a (go le1 env'))) (E le2) >.> go le2 env'
-    blah (ConsT _ a _) = a
 
 run :: LExpr -> Env (SIAddr, D) -> Trace D -> Trace D
 run le env p = unD (runD le env) p
